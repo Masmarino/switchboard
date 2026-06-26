@@ -1,0 +1,8 @@
+language = "C"
+header = "// Genere par cbindgen — ne pas editer a la main."
+include_guard = "SWITCHBOARD_FFI_H"
+no_includes = false
+
+[parse]
+parse_deps = true
+include = ["switchboard-core"]

@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>Switchboard</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64;arm64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <WindowsPackageType>None</WindowsPackageType>
+    <!-- Sans ceci, les cibles MSBuild de WindowsAppSDK qui generent/fusionnent le
+         manifeste d'activation WinUI3 (necessaire meme pour une app non packagee)
+         ne se declenchent pas. Trouve en comparant avec l'exemple officiel Microsoft
+         Samples/SelfContainedDeployment/cs2/cs-winui-unpackaged du repo
+         microsoft/WindowsAppSDK-Samples, qui l'a alors que notre csproj ecrit a la
+         main ne l'avait pas. -->
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <!-- Sans ceci, l'app non packagee exige que l'utilisateur installe separement
+         le Windows App Runtime (dialogue "Required components... are missing").
+         Avec, le runtime WinAppSDK est copie directement dans le dossier de sortie,
+         comme le mode self contained .NET deja utilise pour dotnet publish. -->
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.1839" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- WinUI3 n'a pas d'API de tray icon pour les apps non packagees ; on utilise
+         System.Windows.Forms.NotifyIcon, l'approche standard dans ce cas. On reference
+         directement le framework partage WinForms plutot que <UseWindowsForms>true</UseWindowsForms>,
+         qui declenche a tort le compilateur XAML WPF sur les fichiers .xaml de WinUI3. -->
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- switchboard_ffi.dll : compiler le crate `ffi` pour Windows en mode release
+         (cible x86_64-pc-windows-msvc) et copier le .dll a cote de l'executable
+         avant publication. -->
+    <None Include="..\target\release\switchboard_ffi.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\target\release\switchboard_ffi.dll')" />
+    <None Include="..\icons\icon.ico" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\icons\icon.ico')" />
+  </ItemGroup>
+
+</Project>

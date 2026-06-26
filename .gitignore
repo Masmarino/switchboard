@@ -1,0 +1,4 @@
+/target
+macos/.build
+windows/bin
+windows/obj

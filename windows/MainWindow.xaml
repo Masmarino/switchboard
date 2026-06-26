@@ -1,0 +1,60 @@
+<Window
+    x:Class="Switchboard.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="340" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <Grid Grid.Column="0" Background="{ThemeResource LayerFillColorDefaultBrush}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Padding="16,16,16,8" Orientation="Horizontal" HorizontalAlignment="Stretch">
+                <StackPanel.ChildrenTransitions />
+                <StackPanel Orientation="Vertical" HorizontalAlignment="Stretch" Width="220">
+                    <TextBlock Text="Switchboard" FontSize="17" FontWeight="SemiBold" />
+                    <TextBlock Text="Lanceur de dev local" FontSize="12" Opacity="0.6" />
+                </StackPanel>
+                <Button x:Name="AddButton" Content="&#xE710;" FontFamily="Segoe MDL2 Assets" Click="OnAddAppClicked" ToolTipService.ToolTip="Ajouter une app" />
+                <Button x:Name="StartAllButton" Content="&#xE768;" FontFamily="Segoe MDL2 Assets" Click="OnStartAllClicked" ToolTipService.ToolTip="Tout démarrer" />
+                <Button x:Name="StopAllButton" Content="&#xE71A;" FontFamily="Segoe MDL2 Assets" Click="OnStopAllClicked" ToolTipService.ToolTip="Tout arrêter" />
+            </StackPanel>
+
+            <ListView x:Name="AppListView" Grid.Row="1" SelectionMode="Single"
+                      SelectionChanged="OnAppSelectionChanged" Padding="8,0" />
+        </Grid>
+
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Padding="16,14,16,10" Orientation="Horizontal"
+                        Background="{ThemeResource LayerFillColorDefaultBrush}" HorizontalAlignment="Stretch">
+                <StackPanel Orientation="Vertical" Width="600">
+                    <TextBlock x:Name="DetailTitle" Text="Switchboard" FontSize="14" FontWeight="SemiBold" />
+                    <TextBlock x:Name="DetailSubtitle" Text="" FontSize="12" Opacity="0.6" />
+                </StackPanel>
+                <Button x:Name="ClearLogsButton" Content="&#xE74D;" FontFamily="Segoe MDL2 Assets" Click="OnClearLogsClicked" ToolTipService.ToolTip="Effacer les logs" />
+                <Button x:Name="ExportLogsButton" Content="&#xE74E;" FontFamily="Segoe MDL2 Assets" Click="OnExportLogsClicked" ToolTipService.ToolTip="Exporter les logs…" />
+                <Button x:Name="AboutButton" Content="&#xE946;" FontFamily="Segoe MDL2 Assets" Click="OnAboutClicked" ToolTipService.ToolTip="À propos de Switchboard" />
+            </StackPanel>
+
+            <TextBox x:Name="LogFilterBox" Grid.Row="1" PlaceholderText="Filtrer les logs…"
+                     Margin="12,0,12,8" TextChanged="OnLogFilterChanged" />
+
+            <ScrollViewer x:Name="LogScroller" Grid.Row="2" Background="#1C1C1E" Padding="12">
+                <TextBlock x:Name="LogText" FontFamily="Consolas" FontSize="12"
+                           Foreground="#D6D6D8" TextWrapping="NoWrap" IsTextSelectionEnabled="True" />
+            </ScrollViewer>
+        </Grid>
+    </Grid>
+</Window>

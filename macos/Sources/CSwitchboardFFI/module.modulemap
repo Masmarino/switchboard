@@ -1,0 +1,5 @@
+module CSwitchboardFFI {
+    header "switchboard_ffi.h"
+    link "switchboard_ffi"
+    export *
+}

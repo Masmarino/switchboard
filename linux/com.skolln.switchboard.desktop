@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Switchboard
+Comment=Lanceur de process de dev local
+Exec=switchboard
+Icon=com.skolln.switchboard
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=com.skolln.switchboard
