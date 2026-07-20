@@ -65,49 +65,81 @@ pub fn show_app_dialog(
         .css_classes(vec!["card".to_string()])
         .build();
 
-    let grid = gtk::Grid::builder().row_spacing(8).column_spacing(12).margin_top(12).margin_bottom(12).margin_start(12).margin_end(12).build();
-    let mut row = 0;
-    for (label, widget, expand) in [
-        ("Nom", name_entry.clone().upcast::<gtk::Widget>(), true),
-        ("Dossier", dir_box.clone().upcast::<gtk::Widget>(), true),
-        ("Type", kind_dropdown.clone().upcast::<gtk::Widget>(), true),
-        ("Commande", command_entry.clone().upcast::<gtk::Widget>(), true),
-        ("URL", url_entry.clone().upcast::<gtk::Widget>(), true),
-        ("Auto-restart", auto_restart_switch.clone().upcast::<gtk::Widget>(), false),
-        ("Ordre de démarrage", start_order_spin.clone().upcast::<gtk::Widget>(), true),
+    let subtitle = if existing.is_some() {
+        "Mets à jour la configuration de cette app"
+    } else {
+        "Configure une nouvelle app à superviser"
+    };
+
+    for widget in [
+        name_entry.clone().upcast::<gtk::Widget>(),
+        dir_box.clone().upcast::<gtk::Widget>(),
+        kind_dropdown.clone().upcast::<gtk::Widget>(),
+        command_entry.clone().upcast::<gtk::Widget>(),
+        url_entry.clone().upcast::<gtk::Widget>(),
     ] {
-        let lbl = gtk::Label::builder().label(label).halign(gtk::Align::Start).build();
-        grid.attach(&lbl, 0, row, 1, 1);
-        if expand {
-            widget.set_hexpand(true);
-        } else {
-            widget.set_halign(gtk::Align::Start);
-        }
-        grid.attach(&widget, 1, row, 1, 1);
-        row += 1;
+        widget.set_hexpand(true);
+        widget.set_valign(gtk::Align::Center);
     }
-    let env_label = gtk::Label::builder().label("Variables d'env\n(KEY=VALUE)").halign(gtk::Align::Start).build();
-    grid.attach(&env_label, 0, row, 1, 1);
-    grid.attach(&env_scroller, 1, row, 1, 1);
+
+    let general_group = adw::PreferencesGroup::builder().title("Général").build();
+    let name_row = adw::ActionRow::builder().title("Nom").build();
+    name_row.add_suffix(&name_entry);
+    general_group.add(&name_row);
+    let dir_row = adw::ActionRow::builder().title("Dossier").build();
+    dir_row.add_suffix(&dir_box);
+    general_group.add(&dir_row);
+    let type_row = adw::ActionRow::builder().title("Type").build();
+    type_row.add_suffix(&kind_dropdown);
+    general_group.add(&type_row);
+    let command_row = adw::ActionRow::builder().title("Commande").build();
+    command_row.add_suffix(&command_entry);
+    general_group.add(&command_row);
+
+    let exec_group = adw::PreferencesGroup::builder().title("Exécution").build();
+    let url_row = adw::ActionRow::builder().title("URL").build();
+    url_row.add_suffix(&url_entry);
+    exec_group.add(&url_row);
+    let auto_restart_row = adw::ActionRow::builder().title("Auto-restart").build();
+    auto_restart_switch.set_valign(gtk::Align::Center);
+    auto_restart_row.add_suffix(&auto_restart_switch);
+    exec_group.add(&auto_restart_row);
+    let start_order_row = adw::ActionRow::builder().title("Ordre de démarrage").build();
+    start_order_spin.set_valign(gtk::Align::Center);
+    start_order_row.add_suffix(&start_order_spin);
+    exec_group.add(&start_order_row);
+
+    let advanced_group = adw::PreferencesGroup::builder()
+        .title("Avancé")
+        .description("Variables d'env — une par ligne, format CLE=valeur")
+        .build();
+    advanced_group.add(&env_scroller);
+
+    let page = adw::PreferencesPage::new();
+    page.add(&general_group);
+    page.add(&exec_group);
+    page.add(&advanced_group);
 
     let dialog = adw::Window::builder()
         .transient_for(parent)
         .modal(true)
         .title(title)
-        .default_width(420)
+        .default_width(480)
+        .default_height(560)
         .build();
 
     let save_btn = gtk::Button::with_label(if existing.is_some() { "Enregistrer" } else { "Ajouter" });
     save_btn.add_css_class("suggested-action");
     let cancel_btn = gtk::Button::with_label("Annuler");
 
-    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    let header_title = adw::WindowTitle::new(title, subtitle);
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).title_widget(&header_title).build();
     header.pack_end(&save_btn);
     header.pack_start(&cancel_btn);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&header);
-    content.append(&grid);
+    content.append(&page);
     dialog.set_content(Some(&content));
 
     {

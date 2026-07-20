@@ -17,39 +17,28 @@ struct AppRowView: View {
                 KindBadge(kind: app.kind)
             }
             HStack {
-                Text(app.error ?? app.subtitle)
+                Text(app.error ?? app.statusLabel)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(app.error != nil ? Color.red : .secondary)
                     .lineLimit(1)
                 Spacer()
                 if let url = app.url, let nsurl = URL(string: url) {
-                    Button(action: { NSWorkspace.shared.open(nsurl) }) {
-                        Image(systemName: "safari")
+                    HoverIconButton(systemName: "safari", help: "Ouvrir dans le navigateur") {
+                        NSWorkspace.shared.open(nsurl)
                     }
-                    .buttonStyle(.borderless)
-                    .help("Ouvrir dans le navigateur")
                 }
-                Button(action: onEdit) {
-                    Image(systemName: "pencil")
-                }
-                .buttonStyle(.borderless)
+                HoverIconButton(systemName: "pencil", help: "Modifier", action: onEdit)
 
-                Button(action: onStart) {
-                    Image(systemName: "play.fill")
-                }
-                .buttonStyle(.borderless)
-                .disabled(app.active)
+                HoverIconButton(systemName: "play.fill", help: "Démarrer", action: onStart, disabled: app.active)
 
-                Button(action: onStop) {
-                    Image(systemName: "stop.fill")
-                }
-                .buttonStyle(.borderless)
-                .disabled(!app.active)
+                HoverIconButton(systemName: "stop.fill", help: "Arrêter", action: onStop, disabled: !app.active)
 
-                Button(action: onRemove) {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.borderless)
+                HoverIconButton(systemName: "trash", help: "Supprimer", action: onRemove, tint: .red)
+            }
+            if app.active, app.error == nil {
+                Text(app.resourceLine)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
             }
         }
         .padding(.vertical, 4)

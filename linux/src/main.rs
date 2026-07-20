@@ -1,6 +1,6 @@
 mod add_dialog;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -50,12 +50,34 @@ struct Ui {
     /// Dernier statut connu par app, pour detecter les transitions vers "failed"
     /// et declencher une notification — pas pour l'affichage (qui relit `list_apps`).
     last_status: Rc<RefCell<HashMap<Uuid, &'static str>>>,
+    /// Derniere revision moteur vue par le poll — permet au timeout de sauter
+    /// un refresh complet quand rien n'a change depuis le dernier tick.
+    last_seen_revision: Rc<Cell<u64>>,
+    /// Numero de sequence du dernier log connu par le client pour l'app
+    /// selectionnee ; envoye au moteur pour ne recevoir que le delta.
+    since_seq: Rc<Cell<u64>>,
+    /// Buffer de logs accumule cote client pour l'app selectionnee, mis a
+    /// jour par append (delta) ou remplacement complet (`logs_replace`).
+    selected_logs: Rc<RefCell<Vec<String>>>,
 }
 
 impl Ui {
-    fn refresh(&self) {
-        let apps = self.engine.borrow_mut().list_apps();
+    fn refresh_now(&self) {
+        let selected = *self.selected.borrow();
+        let logs_for = selected.map(|id| (id, self.since_seq.get()));
+        let apps = self.engine.borrow_mut().list_apps(logs_for);
         self.notify_new_failures(&apps);
+
+        if let Some(id) = selected {
+            if let Some(view) = apps.iter().find(|a| a.id == id) {
+                if view.logs_replace {
+                    *self.selected_logs.borrow_mut() = view.logs.clone();
+                } else if !view.logs.is_empty() {
+                    self.selected_logs.borrow_mut().extend(view.logs.iter().cloned());
+                }
+                self.since_seq.set(view.logs_base_seq + view.logs.len() as u64);
+            }
+        }
 
         while let Some(child) = self.list_box.first_child() {
             self.list_box.remove(&child);
@@ -74,7 +96,15 @@ impl Ui {
 
         if selected_view.is_none() {
             if let Some(first) = apps.first() {
+                // Fell back to a different app than the one `logs_for` targeted
+                // above (e.g. the previously-selected app was just removed) —
+                // its log-tracking state must reset, or a stale `since_seq` from
+                // the old selection would be diffed against the new app's own
+                // sequence numbers on the *next* refresh and silently show a
+                // truncated or empty log view.
                 *self.selected.borrow_mut() = Some(first.id);
+                self.since_seq.set(0);
+                self.selected_logs.borrow_mut().clear();
                 selected_view = Some(first.clone());
             }
         }
@@ -88,18 +118,31 @@ impl Ui {
         }
     }
 
+    /// Point d'entree du poll periodique : ne refait un `refresh_now` complet
+    /// (fetch + rebuild GTK) que si `revision()` a change depuis le dernier tick.
+    fn refresh(&self) {
+        let rev = self.engine.borrow_mut().revision();
+        if rev != self.last_seen_revision.get() {
+            self.last_seen_revision.set(rev);
+            self.refresh_now();
+        }
+    }
+
     fn render_logs(&self, view: &AppView) {
+        let _ = view; // no longer used for log content, kept for call-site symmetry
         let filter = self.search_entry.text().to_string().to_lowercase();
         let buffer = self.log_view.buffer();
-        if view.logs.is_empty() {
+        let logs = self.selected_logs.borrow();
+        if logs.is_empty() {
             buffer.set_text("Pas encore de logs. Démarre l'app pour voir sa sortie ici.");
             return;
         }
         let text = if filter.is_empty() {
-            view.logs.join("\n")
+            logs.join("\n")
         } else {
-            view.logs.iter().filter(|l| l.to_lowercase().contains(&filter)).cloned().collect::<Vec<_>>().join("\n")
+            logs.iter().filter(|l| l.to_lowercase().contains(&filter)).cloned().collect::<Vec<_>>().join("\n")
         };
+        drop(logs);
         buffer.set_text(&text);
         let mut end = buffer.end_iter();
         self.log_view.scroll_to_iter(&mut end, 0.0, false, 0.0, 0.0);
@@ -196,10 +239,14 @@ impl Ui {
         {
             let engine = self.engine.clone();
             let selected = self.selected.clone();
+            let since_seq = self.since_seq.clone();
+            let selected_logs = self.selected_logs.clone();
             let this_weak = self.weak_refresh();
             start_btn.connect_clicked(move |_| {
                 engine.borrow_mut().start_app(id);
                 *selected.borrow_mut() = Some(id);
+                since_seq.set(0);
+                selected_logs.borrow_mut().clear();
                 this_weak();
             });
         }
@@ -242,9 +289,13 @@ impl Ui {
 
         {
             let selected = self.selected.clone();
+            let since_seq = self.since_seq.clone();
+            let selected_logs = self.selected_logs.clone();
             let this_weak = self.weak_refresh();
             row.connect_activate(move |_| {
                 *selected.borrow_mut() = Some(id);
+                since_seq.set(0);
+                selected_logs.borrow_mut().clear();
                 this_weak();
             });
         }
@@ -263,6 +314,9 @@ impl Ui {
         let header_label = self.header_label.clone();
         let selected = self.selected.clone();
         let last_status = self.last_status.clone();
+        let last_seen_revision = self.last_seen_revision.clone();
+        let since_seq = self.since_seq.clone();
+        let selected_logs = self.selected_logs.clone();
         move || {
             let ui = Ui {
                 app: app.clone(),
@@ -273,8 +327,11 @@ impl Ui {
                 header_label: header_label.clone(),
                 selected: selected.clone(),
                 last_status: last_status.clone(),
+                last_seen_revision: last_seen_revision.clone(),
+                since_seq: since_seq.clone(),
+                selected_logs: selected_logs.clone(),
             };
-            ui.refresh();
+            ui.refresh_now();
         }
     }
 }
@@ -359,6 +416,9 @@ fn build_ui(app: &adw::Application) {
         header_label,
         selected: Rc::new(RefCell::new(None)),
         last_status: Rc::new(RefCell::new(HashMap::new())),
+        last_seen_revision: Rc::new(Cell::new(0)),
+        since_seq: Rc::new(Cell::new(0)),
+        selected_logs: Rc::new(RefCell::new(Vec::new())),
     });
 
     {
@@ -377,14 +437,14 @@ fn build_ui(app: &adw::Application) {
         let ui = ui.clone();
         start_all_btn.connect_clicked(move |_| {
             ui.engine.borrow_mut().start_all();
-            ui.refresh();
+            ui.refresh_now();
         });
     }
     {
         let ui = ui.clone();
         stop_all_btn.connect_clicked(move |_| {
             ui.engine.borrow_mut().stop_all_running();
-            ui.refresh();
+            ui.refresh_now();
         });
     }
     {
@@ -393,12 +453,14 @@ fn build_ui(app: &adw::Application) {
             if let Some(id) = *ui.selected.borrow() {
                 ui.engine.borrow_mut().clear_logs(id);
             }
-            ui.refresh();
+            ui.since_seq.set(0);
+            ui.selected_logs.borrow_mut().clear();
+            ui.refresh_now();
         });
     }
     {
         let ui = ui.clone();
-        search_entry.connect_search_changed(move |_| ui.refresh());
+        search_entry.connect_search_changed(move |_| ui.refresh_now());
     }
     {
         let ui = ui.clone();
@@ -440,7 +502,7 @@ fn build_ui(app: &adw::Application) {
         });
     }
 
-    ui.refresh();
+    ui.refresh_now();
 
     // Poll periodique : les logs/statuts arrivent depuis des threads de process en
     // arriere-plan, on les fait passer dans la boucle GTK via un timeout.

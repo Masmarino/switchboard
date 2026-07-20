@@ -15,7 +15,8 @@ public sealed class DevtoolEngine : IDisposable
 
     [DllImport(Dll)] private static extern IntPtr switchboard_engine_new();
     [DllImport(Dll)] private static extern void switchboard_engine_free(IntPtr engine);
-    [DllImport(Dll)] private static extern IntPtr switchboard_engine_list_apps_json(IntPtr engine);
+    [DllImport(Dll)] private static extern IntPtr switchboard_engine_list_apps_json(IntPtr engine, string? selectedId, ulong sinceSeq);
+    [DllImport(Dll)] private static extern ulong switchboard_engine_revision(IntPtr engine);
     [DllImport(Dll)] private static extern void switchboard_engine_add_app_json(IntPtr engine, string draftJson);
     [DllImport(Dll)] private static extern void switchboard_engine_update_app_json(IntPtr engine, string id, string draftJson);
     [DllImport(Dll)] private static extern void switchboard_engine_remove_app(IntPtr engine, string id);
@@ -34,9 +35,9 @@ public sealed class DevtoolEngine : IDisposable
         _handle = switchboard_engine_new();
     }
 
-    public List<AppEntry> ListApps()
+    public List<AppEntry> ListApps(string? selectedId, ulong sinceSeq)
     {
-        var raw = switchboard_engine_list_apps_json(_handle);
+        var raw = switchboard_engine_list_apps_json(_handle, selectedId, sinceSeq);
         if (raw == IntPtr.Zero) return [];
         try
         {
@@ -48,6 +49,8 @@ public sealed class DevtoolEngine : IDisposable
             switchboard_string_free(raw);
         }
     }
+
+    public ulong Revision() => switchboard_engine_revision(_handle);
 
     public void AddApp(AppDraftPayload draft) =>
         switchboard_engine_add_app_json(_handle, JsonSerializer.Serialize(draft));

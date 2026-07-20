@@ -81,16 +81,38 @@ pub unsafe extern "C" fn switchboard_engine_free(engine: *mut Engine) {
     }
 }
 
-/// Retourne la liste des apps (et leur etat courant) en JSON. La chaine retournee
-/// doit etre liberee avec [`switchboard_string_free`].
+/// Retourne la liste des apps (et leur etat courant) en JSON — seule l'app dont
+/// l'id correspond a `selected_id` (NULL/vide = aucune) recoit ses logs, et
+/// uniquement les lignes posterieures a `since_seq` (sauf remplacement complet
+/// signale par `logs_replace` dans la reponse JSON). La chaine retournee doit
+/// etre liberee avec [`switchboard_string_free`].
+///
+/// # Safety
+/// `engine` doit etre un pointeur valide retourne par [`switchboard_engine_new`].
+/// `selected_id`, si non-NULL, doit etre une chaine C valide.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn switchboard_engine_list_apps_json(
+    engine: *mut Engine,
+    selected_id: *const c_char,
+    since_seq: u64,
+) -> *mut c_char {
+    let engine = unsafe { &mut *engine };
+    let logs_for = (unsafe { c_str_to_string(selected_id) })
+        .and_then(|s| Uuid::from_str(&s).ok())
+        .map(|id| (id, since_seq));
+    let apps = engine.list_apps(logs_for);
+    string_to_c(serde_json::to_string(&apps).unwrap_or_else(|_| "[]".to_string()))
+}
+
+/// Renvoie la revision courante du moteur (compteur qui n'avance que si quelque
+/// chose a reellement change). Bon marche : pas de JSON, pas d'allocation.
 ///
 /// # Safety
 /// `engine` doit etre un pointeur valide retourne par [`switchboard_engine_new`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn switchboard_engine_list_apps_json(engine: *mut Engine) -> *mut c_char {
+pub unsafe extern "C" fn switchboard_engine_revision(engine: *mut Engine) -> u64 {
     let engine = unsafe { &mut *engine };
-    let apps = engine.list_apps();
-    string_to_c(serde_json::to_string(&apps).unwrap_or_else(|_| "[]".to_string()))
+    engine.revision()
 }
 
 /// `draft_json` doit correspondre a [`FfiAppDraft`] (cf. doc du module).

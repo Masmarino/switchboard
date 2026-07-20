@@ -6,6 +6,7 @@ pub enum Event {
     Log(Uuid, String),
     StatusChanged(Uuid, AppStatus),
     HealthChanged(Uuid, bool),
+    StartRequested(Uuid),
 }
 
 pub fn stream_lines<R: std::io::Read>(reader: R, app_id: Uuid, tx: std::sync::mpsc::Sender<Event>) {

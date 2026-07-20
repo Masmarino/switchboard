@@ -23,13 +23,28 @@ struct Engine *switchboard_engine_new(void);
 void switchboard_engine_free(struct Engine *engine);
 
 /**
- * Retourne la liste des apps (et leur etat courant) en JSON. La chaine retournee
- * doit etre liberee avec [`switchboard_string_free`].
+ * Retourne la liste des apps (et leur etat courant) en JSON — seule l'app dont
+ * l'id correspond a `selected_id` (NULL/vide = aucune) recoit ses logs, et
+ * uniquement les lignes posterieures a `since_seq` (sauf remplacement complet
+ * signale par `logs_replace` dans la reponse JSON). La chaine retournee doit
+ * etre liberee avec [`switchboard_string_free`].
+ *
+ * # Safety
+ * `engine` doit etre un pointeur valide retourne par [`switchboard_engine_new`].
+ * `selected_id`, si non-NULL, doit etre une chaine C valide.
+ */
+char *switchboard_engine_list_apps_json(struct Engine *engine,
+                                        const char *selected_id,
+                                        uint64_t since_seq);
+
+/**
+ * Renvoie la revision courante du moteur (compteur qui n'avance que si quelque
+ * chose a reellement change). Bon marche : pas de JSON, pas d'allocation.
  *
  * # Safety
  * `engine` doit etre un pointeur valide retourne par [`switchboard_engine_new`].
  */
-char *switchboard_engine_list_apps_json(struct Engine *engine);
+uint64_t switchboard_engine_revision(struct Engine *engine);
 
 /**
  * `draft_json` doit correspondre a [`FfiAppDraft`] (cf. doc du module).

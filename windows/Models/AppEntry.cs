@@ -44,6 +44,12 @@ public class AppEntry
     [JsonPropertyName("logs")]
     public List<string> Logs { get; set; } = [];
 
+    [JsonPropertyName("logs_base_seq")]
+    public ulong LogsBaseSeq { get; set; }
+
+    [JsonPropertyName("logs_replace")]
+    public bool LogsReplace { get; set; }
+
     [JsonPropertyName("healthy")]
     public bool? Healthy { get; set; }
 

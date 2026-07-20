@@ -8,9 +8,19 @@ final class AppState {
     private let engine = DevtoolEngine()
     private var pollTask: Task<Void, Never>?
     private var lastStatus: [String: String] = [:]
+    private var lastSeenRevision: UInt64 = 0
+    private var sinceSeq: UInt64 = 0
+    var selectedLogs: [String] = []
 
     var apps: [AppEntry] = []
-    var selectedID: String?
+    var selectedID: String? {
+        didSet {
+            guard selectedID != oldValue else { return }
+            sinceSeq = 0
+            selectedLogs = []
+            refresh(force: true)
+        }
+    }
     var addSheetPresented = false
     var editingApp: AppEntry?
     var logFilter = ""
@@ -20,19 +30,23 @@ final class AppState {
     }
 
     var filteredLogs: [String] {
-        guard let selected else { return [] }
-        guard !logFilter.isEmpty else { return selected.logs }
+        guard selected != nil else { return [] }
+        guard !logFilter.isEmpty else { return selectedLogs }
         let needle = logFilter.lowercased()
-        return selected.logs.filter { $0.lowercased().contains(needle) }
+        return selectedLogs.filter { $0.lowercased().contains(needle) }
     }
 
     func start() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-        refresh()
+        refresh(force: true)
         pollTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(200))
-                refresh()
+                let rev = engine.revision()
+                if rev != lastSeenRevision {
+                    lastSeenRevision = rev
+                    refresh(force: false)
+                }
             }
         }
     }
@@ -41,8 +55,28 @@ final class AppState {
         pollTask?.cancel()
     }
 
-    func refresh() {
-        apps = engine.listApps()
+    func refresh(force: Bool) {
+        let fetched = engine.listApps(selectedID: selectedID, sinceSeq: sinceSeq)
+        if let id = selectedID, let selectedEntry = fetched.first(where: { $0.id == id }) {
+            if selectedEntry.logsReplace {
+                selectedLogs = selectedEntry.logs
+            } else if !selectedEntry.logs.isEmpty {
+                selectedLogs.append(contentsOf: selectedEntry.logs)
+            }
+            sinceSeq = selectedEntry.logsBaseSeq + UInt64(selectedEntry.logs.count)
+        }
+        let strippedForComparison = fetched.map { entry in
+            AppEntry(
+                id: entry.id, name: entry.name, workingDir: entry.workingDir, kind: entry.kind,
+                command: entry.command, url: entry.url, envVars: entry.envVars, autoRestart: entry.autoRestart,
+                startOrder: entry.startOrder, statusLabel: entry.statusLabel, error: entry.error, active: entry.active,
+                logs: [], logsBaseSeq: 0, logsReplace: false,
+                healthy: entry.healthy, cpuPercent: entry.cpuPercent, memoryMb: entry.memoryMb
+            )
+        }
+        if force || strippedForComparison != apps {
+            apps = strippedForComparison
+        }
         notifyNewFailures()
         if selectedID == nil {
             selectedID = apps.first?.id
@@ -67,33 +101,38 @@ final class AppState {
     func startApp(_ id: String) {
         engine.startApp(id: id)
         selectedID = id
-        refresh()
+        refresh(force: true)
     }
 
     func stopApp(_ id: String) {
         engine.stopApp(id: id)
-        refresh()
+        refresh(force: true)
     }
 
     func removeApp(_ id: String) {
         engine.removeApp(id: id)
-        refresh()
+        if selectedID == id {
+            selectedID = nil
+        }
+        refresh(force: true)
     }
 
     func startAll() {
         engine.startAll()
-        refresh()
+        refresh(force: true)
     }
 
     func stopAll() {
         engine.stopAll()
-        refresh()
+        refresh(force: true)
     }
 
     func clearLogs() {
         guard let id = selectedID else { return }
         engine.clearLogs(id: id)
-        refresh()
+        selectedLogs = []
+        sinceSeq = 0
+        refresh(force: true)
     }
 
     @discardableResult
@@ -103,11 +142,11 @@ final class AppState {
 
     func addApp(_ draft: AppDraftPayload) {
         engine.addApp(draft)
-        refresh()
+        refresh(force: true)
     }
 
     func updateApp(id: String, draft: AppDraftPayload) {
         engine.updateApp(id: id, draft: draft)
-        refresh()
+        refresh(force: true)
     }
 }

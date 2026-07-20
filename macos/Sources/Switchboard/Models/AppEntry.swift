@@ -1,4 +1,4 @@
-struct AppEntry: Codable, Identifiable {
+struct AppEntry: Codable, Identifiable, Equatable {
     let id: String
     let name: String
     let workingDir: String
@@ -12,6 +12,8 @@ struct AppEntry: Codable, Identifiable {
     let error: String?
     let active: Bool
     let logs: [String]
+    let logsBaseSeq: UInt64
+    let logsReplace: Bool
     let healthy: Bool?
     let cpuPercent: Double
     let memoryMb: Double
@@ -23,13 +25,12 @@ struct AppEntry: Codable, Identifiable {
         }.joined(separator: "\n")
     }
 
-    var subtitle: String {
-        guard active else { return statusLabel }
+    var resourceLine: String {
         let resource = String(format: "%.0f%% CPU · %.0f Mo", cpuPercent, memoryMb)
         switch healthy {
-        case .some(true): return "\(statusLabel) · ✓ healthy · \(resource)"
-        case .some(false): return "\(statusLabel) · ✗ ne répond pas · \(resource)"
-        case .none: return "\(statusLabel) · \(resource)"
+        case .some(true): return "✓ healthy · \(resource)"
+        case .some(false): return "✗ ne répond pas · \(resource)"
+        case .none: return resource
         }
     }
 }

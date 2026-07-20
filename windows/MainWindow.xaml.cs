@@ -33,6 +33,9 @@ public sealed partial class MainWindow : Window
     private string? _selectedId;
     private List<AppEntry> _apps = [];
     private readonly Dictionary<string, string> _lastStatus = [];
+    private ulong _lastSeenRevision;
+    private ulong _sinceSeq;
+    private readonly List<string> _selectedLogs = [];
     private string _logFilter = "";
 
     public MainWindow()
@@ -47,7 +50,7 @@ public sealed partial class MainWindow : Window
 
         Closed += (_, _) => { _trayIcon?.Dispose(); };
 
-        Refresh();
+        RefreshNow();
     }
 
     /// <summary>
@@ -84,15 +87,15 @@ public sealed partial class MainWindow : Window
             item.Click += (_, _) =>
             {
                 if (app.Active) _engine.StopApp(app.Id); else _engine.StartApp(app.Id);
-                Refresh();
+                RefreshNow();
             };
             menu.Items.Add(item);
         }
         menu.Items.Add(new WinForms.ToolStripSeparator());
         var startAll = new WinForms.ToolStripMenuItem("Tout démarrer");
-        startAll.Click += (_, _) => { _engine.StartAll(); Refresh(); };
+        startAll.Click += (_, _) => { _engine.StartAll(); RefreshNow(); };
         var stopAll = new WinForms.ToolStripMenuItem("Tout arrêter");
-        stopAll.Click += (_, _) => { _engine.StopAll(); Refresh(); };
+        stopAll.Click += (_, _) => { _engine.StopAll(); RefreshNow(); };
         menu.Items.Add(startAll);
         menu.Items.Add(stopAll);
         menu.Items.Add(new WinForms.ToolStripSeparator());
@@ -102,12 +105,43 @@ public sealed partial class MainWindow : Window
         _trayIcon.ContextMenuStrip = menu;
     }
 
-    private void Refresh()
+    private void RefreshNow()
     {
-        _apps = _engine.ListApps();
+        _apps = _engine.ListApps(_selectedId, _sinceSeq);
+        if (_selectedId is { } id)
+        {
+            var view = _apps.FirstOrDefault(a => a.Id == id);
+            if (view is not null)
+            {
+                if (view.LogsReplace)
+                {
+                    _selectedLogs.Clear();
+                    _selectedLogs.AddRange(view.Logs);
+                }
+                else if (view.Logs.Count > 0)
+                {
+                    _selectedLogs.AddRange(view.Logs);
+                }
+                _sinceSeq = view.LogsBaseSeq + (ulong)view.Logs.Count;
+            }
+        }
         NotifyNewFailures();
         RebuildTrayMenu();
-        _selectedId ??= _apps.FirstOrDefault()?.Id;
+        if (_selectedId is null)
+        {
+            _selectedId = _apps.FirstOrDefault()?.Id;
+            if (_selectedId is not null)
+            {
+                // Just adopted a fallback selection (first launch, or the
+                // previously-selected app was just deleted) — its log-tracking
+                // state must start fresh, or a stale _sinceSeq left over from
+                // whichever app was selected before would be diffed against this
+                // different app's own sequence numbers on the next refresh and
+                // silently show a truncated or empty log view.
+                _sinceSeq = 0;
+                _selectedLogs.Clear();
+            }
+        }
 
         AppListView.Items.Clear();
         foreach (var app in _apps)
@@ -126,19 +160,33 @@ public sealed partial class MainWindow : Window
 
         DetailTitle.Text = selected.Name;
         DetailSubtitle.Text = selected.Subtitle;
-        RenderLogs(selected);
+        RenderLogs();
     }
 
-    private void RenderLogs(AppEntry app)
+    /// <summary>
+    /// Point d'entree du timer de poll : ne relance RefreshNow (fetch complet +
+    /// reconstruction UI) que si la revision moteur a change depuis le dernier tick.
+    /// </summary>
+    private void Refresh()
     {
-        if (app.Logs.Count == 0)
+        var rev = _engine.Revision();
+        if (rev != _lastSeenRevision)
+        {
+            _lastSeenRevision = rev;
+            RefreshNow();
+        }
+    }
+
+    private void RenderLogs()
+    {
+        if (_selectedLogs.Count == 0)
         {
             LogText.Text = "Pas encore de logs. Démarre l'app pour voir sa sortie ici.";
             return;
         }
         var lines = string.IsNullOrEmpty(_logFilter)
-            ? app.Logs
-            : app.Logs.Where(l => l.Contains(_logFilter, StringComparison.OrdinalIgnoreCase)).ToList();
+            ? _selectedLogs
+            : _selectedLogs.Where(l => l.Contains(_logFilter, StringComparison.OrdinalIgnoreCase)).ToList();
         LogText.Text = string.Join("\n", lines);
         LogScroller.UpdateLayout();
         LogScroller.ChangeView(null, LogScroller.ScrollableHeight, null, true);
@@ -227,15 +275,15 @@ public sealed partial class MainWindow : Window
         actions.Children.Add(editBtn);
 
         var startBtn = new Button { Content = "▶", IsEnabled = !app.Active, Margin = new Thickness(0, 0, 4, 0) };
-        startBtn.Click += (_, _) => { _engine.StartApp(app.Id); _selectedId = app.Id; Refresh(); };
+        startBtn.Click += (_, _) => { _engine.StartApp(app.Id); _selectedId = app.Id; _sinceSeq = 0; _selectedLogs.Clear(); RefreshNow(); };
         actions.Children.Add(startBtn);
 
         var stopBtn = new Button { Content = "■", IsEnabled = app.Active, Margin = new Thickness(0, 0, 4, 0) };
-        stopBtn.Click += (_, _) => { _engine.StopApp(app.Id); Refresh(); };
+        stopBtn.Click += (_, _) => { _engine.StopApp(app.Id); RefreshNow(); };
         actions.Children.Add(stopBtn);
 
         var deleteBtn = new Button { Content = "🗑" };
-        deleteBtn.Click += (_, _) => { _engine.RemoveApp(app.Id); if (_selectedId == app.Id) _selectedId = null; Refresh(); };
+        deleteBtn.Click += (_, _) => { _engine.RemoveApp(app.Id); if (_selectedId == app.Id) _selectedId = null; RefreshNow(); };
         actions.Children.Add(deleteBtn);
 
         var bottomRow = new Grid();
@@ -257,26 +305,30 @@ public sealed partial class MainWindow : Window
         if (AppListView.SelectedItem is FrameworkElement el && el.Tag is string id)
         {
             _selectedId = id;
-            Refresh();
+            _sinceSeq = 0;
+            _selectedLogs.Clear();
+            RefreshNow();
         }
     }
 
     private void OnStartAllClicked(object sender, RoutedEventArgs e)
     {
         _engine.StartAll();
-        Refresh();
+        RefreshNow();
     }
 
     private void OnStopAllClicked(object sender, RoutedEventArgs e)
     {
         _engine.StopAll();
-        Refresh();
+        RefreshNow();
     }
 
     private void OnClearLogsClicked(object sender, RoutedEventArgs e)
     {
         if (_selectedId is { } id) _engine.ClearLogs(id);
-        Refresh();
+        _sinceSeq = 0;
+        _selectedLogs.Clear();
+        RefreshNow();
     }
 
     private async void OnExportLogsClicked(object sender, RoutedEventArgs e)
@@ -328,7 +380,7 @@ public sealed partial class MainWindow : Window
     private void OnLogFilterChanged(object sender, TextChangedEventArgs e)
     {
         _logFilter = LogFilterBox.Text;
-        Refresh();
+        RefreshNow();
     }
 
     private void OnAddAppClicked(object sender, RoutedEventArgs e) => ShowAppDialog(null);
@@ -356,14 +408,13 @@ public sealed partial class MainWindow : Window
         Grid.SetColumn(browseDirBtn, 1);
         dirRow.Children.Add(dirBox);
         dirRow.Children.Add(browseDirBtn);
-        var kindCombo = new ComboBox { ItemsSource = KindOptions.Select(k => k.Label).ToArray() };
+        var kindCombo = new ComboBox { ItemsSource = KindOptions.Select(k => k.Label).ToArray(), HorizontalAlignment = HorizontalAlignment.Stretch };
         kindCombo.SelectedIndex = Math.Max(0, Array.FindIndex(KindOptions, k => k.Kind == (existing?.Kind ?? AppKind.Cargo)));
         var commandBox = new TextBox { PlaceholderText = "Commande (npm/raw)", Text = existing?.Command ?? "" };
         var urlBox = new TextBox { PlaceholderText = "http://localhost:3000 (optionnel)", Text = existing?.Url ?? "" };
-        var autoRestartToggle = new ToggleSwitch { Header = "Auto-restart", IsOn = existing?.AutoRestart ?? false };
+        var autoRestartToggle = new ToggleSwitch { IsOn = existing?.AutoRestart ?? false, OnContent = "", OffContent = "" };
         var startOrderBox = new NumberBox
         {
-            Header = "Ordre de démarrage",
             Value = existing?.StartOrder ?? 0,
             Minimum = 0,
             Maximum = 99,
@@ -371,27 +422,71 @@ public sealed partial class MainWindow : Window
         };
         var envVarsBox = new TextBox
         {
-            PlaceholderText = "KEY=VALUE (une par ligne)",
+            PlaceholderText = "CLE=valeur (une par ligne)",
             Text = existing?.EnvVarsText ?? "",
             AcceptsReturn = true,
             Height = 80,
             TextWrapping = TextWrapping.Wrap,
         };
 
-        var panel = new StackPanel { Spacing = 8 };
-        panel.Children.Add(nameBox);
-        panel.Children.Add(dirRow);
-        panel.Children.Add(kindCombo);
-        panel.Children.Add(commandBox);
-        panel.Children.Add(urlBox);
-        panel.Children.Add(autoRestartToggle);
-        panel.Children.Add(startOrderBox);
-        panel.Children.Add(envVarsBox);
+        var generalCard = MakeSectionCard(
+            "Général",
+            MakeFieldRow("Nom", nameBox),
+            MakeFieldRow("Dossier", dirRow),
+            MakeFieldRow("Type", kindCombo),
+            MakeFieldRow("Commande", commandBox));
+        var execCard = MakeSectionCard(
+            "Exécution",
+            MakeFieldRow("URL", urlBox),
+            MakeFieldRow("Auto-restart", autoRestartToggle),
+            MakeFieldRow("Ordre de démarrage", startOrderBox));
+        var advancedCard = MakeSectionCard(
+            "Avancé",
+            MakeFieldRow("Variables d'env", envVarsBox));
+
+        var headerIcon = new Border
+        {
+            Width = 36,
+            Height = 36,
+            CornerRadius = new CornerRadius(18),
+            Background = new SolidColorBrush(Color.FromArgb(255, 0x04, 0x09, 0x43)),
+            Child = new TextBlock
+            {
+                Text = existing is not null ? "✎" : "+",
+                Foreground = new SolidColorBrush(Colors.White),
+                FontSize = 16,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+        var headerTextPanel = new StackPanel { Spacing = 2 };
+        headerTextPanel.Children.Add(new TextBlock
+        {
+            Text = existing is not null ? "Modifier l'app" : "Ajouter une app",
+            FontSize = 18,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+        });
+        headerTextPanel.Children.Add(new TextBlock
+        {
+            Text = existing is not null ? "Mets à jour la configuration de cette app" : "Configure une nouvelle app à superviser",
+            FontSize = 12,
+            Opacity = 0.6,
+        });
+        var headerPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Margin = new Thickness(0, 0, 0, 4) };
+        headerPanel.Children.Add(headerIcon);
+        headerPanel.Children.Add(headerTextPanel);
+
+        var panel = new StackPanel { Spacing = 20 };
+        panel.Children.Add(headerPanel);
+        panel.Children.Add(generalCard);
+        panel.Children.Add(execCard);
+        panel.Children.Add(advancedCard);
 
         var dialog = new ContentDialog
         {
-            Title = existing is not null ? "Modifier l'app" : "Ajouter une app",
-            Content = panel,
+            // No Title: the custom header inside Content replaces the default dialog title bar.
+            Content = new ScrollViewer { Content = panel, MaxHeight = 560 },
             PrimaryButtonText = existing is not null ? "Enregistrer" : "Ajouter",
             CloseButtonText = "Annuler",
             XamlRoot = Content.XamlRoot,
@@ -427,7 +522,62 @@ public sealed partial class MainWindow : Window
             {
                 _engine.AddApp(draft);
             }
-            Refresh();
+            RefreshNow();
         }
+    }
+
+    private static readonly SolidColorBrush SectionTitleBrush = new(Color.FromArgb(255, 0x04, 0x09, 0x43));
+
+    /// <summary>
+    /// Wraps a group of field rows in a titled "card" — a rounded, tinted-background
+    /// container with a bold navy section title above it, mirroring the macOS/Linux
+    /// add-app dialog redesign (System Settings / GNOME PreferencesGroup style).
+    /// </summary>
+    private static StackPanel MakeSectionCard(string title, params FrameworkElement[] rows)
+    {
+        var titleBlock = new TextBlock
+        {
+            Text = title.ToUpperInvariant(),
+            FontSize = 11,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            Foreground = SectionTitleBrush,
+            Margin = new Thickness(0, 0, 0, 8),
+        };
+
+        var rowsPanel = new StackPanel { Spacing = 12 };
+        foreach (var row in rows)
+        {
+            rowsPanel.Children.Add(row);
+        }
+
+        var card = new Border
+        {
+            Background = new SolidColorBrush(Colors.Gray) { Opacity = 0.08 },
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(14),
+            Child = rowsPanel,
+        };
+
+        var container = new StackPanel { Spacing = 8 };
+        container.Children.Add(titleBlock);
+        container.Children.Add(card);
+        return container;
+    }
+
+    /// <summary>
+    /// A label + control row with a fixed-width label column, so every row's control
+    /// lines up into a clean grid regardless of label length.
+    /// </summary>
+    private static Grid MakeFieldRow(string label, FrameworkElement control)
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var labelBlock = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(labelBlock, 0);
+        Grid.SetColumn(control, 1);
+        grid.Children.Add(labelBlock);
+        grid.Children.Add(control);
+        return grid;
     }
 }

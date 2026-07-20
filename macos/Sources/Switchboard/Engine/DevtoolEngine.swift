@@ -15,8 +15,14 @@ final class DevtoolEngine {
         switchboard_engine_free(handle)
     }
 
-    func listApps() -> [AppEntry] {
-        guard let raw = switchboard_engine_list_apps_json(handle) else { return [] }
+    func listApps(selectedID: String?, sinceSeq: UInt64) -> [AppEntry] {
+        let raw: UnsafeMutablePointer<CChar>?
+        if let selectedID {
+            raw = selectedID.withCString { switchboard_engine_list_apps_json(handle, $0, sinceSeq) }
+        } else {
+            raw = switchboard_engine_list_apps_json(handle, nil, sinceSeq)
+        }
+        guard let raw else { return [] }
         defer { switchboard_string_free(raw) }
         let data = Data(String(cString: raw).utf8)
         let decoder = JSONDecoder()
@@ -27,6 +33,10 @@ final class DevtoolEngine {
             logger.error("Failed to decode app list: \(error.localizedDescription)")
             return []
         }
+    }
+
+    func revision() -> UInt64 {
+        switchboard_engine_revision(handle)
     }
 
     func addApp(_ draft: AppDraftPayload) {
