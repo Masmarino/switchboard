@@ -1,11 +1,24 @@
 import SwiftUI
 
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var state: AppState?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        state?.stopAllForShutdown()
+    }
+}
+
 @main
 struct SwitchboardApp: App {
     @State private var state = AppState()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
+        // `appDelegate` needs a reference to `state` to stop supervised apps on quit;
+        // wiring it here (rather than `init`) is safe since `body` always runs at least
+        // once before `applicationWillTerminate` could possibly fire.
+        let _ = { appDelegate.state = state }()
         WindowGroup {
             ContentView(state: state)
         }

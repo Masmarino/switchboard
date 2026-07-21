@@ -11,6 +11,10 @@ final class AppState {
     private var lastSeenRevision: UInt64 = 0
     private var sinceSeq: UInt64 = 0
     var selectedLogs: [String] = []
+    /// Mirrors the Rust engine's own MAX_LOG_LINES cap — without this, a client that stays
+    /// caught up with the server never hits the "replace" fallback that would otherwise
+    /// reset this array, so it grows unbounded for the lifetime of the process.
+    private static let maxDisplayedLogLines = 5000
 
     var apps: [AppEntry] = []
     var selectedID: String? {
@@ -62,6 +66,9 @@ final class AppState {
                 selectedLogs = selectedEntry.logs
             } else if !selectedEntry.logs.isEmpty {
                 selectedLogs.append(contentsOf: selectedEntry.logs)
+                if selectedLogs.count > Self.maxDisplayedLogLines {
+                    selectedLogs.removeFirst(selectedLogs.count - Self.maxDisplayedLogLines)
+                }
             }
             sinceSeq = selectedEntry.logsBaseSeq + UInt64(selectedEntry.logs.count)
         }
@@ -125,6 +132,14 @@ final class AppState {
     func stopAll() {
         engine.stopAll()
         refresh(force: true)
+    }
+
+    /// `applicationWillTerminate` fires before the process exits, but `DevtoolEngine.deinit`
+    /// does not — the OS reclaims the process without running Swift's deinit chain on
+    /// normal quit, which would otherwise leave supervised app process trees running as
+    /// orphans holding their ports. Call this explicitly from the app delegate instead.
+    func stopAllForShutdown() {
+        engine.stopAll()
     }
 
     func clearLogs() {

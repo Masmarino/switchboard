@@ -36,6 +36,10 @@ public sealed partial class MainWindow : Window
     private ulong _lastSeenRevision;
     private ulong _sinceSeq;
     private readonly List<string> _selectedLogs = [];
+    /// Mirrors the Rust engine's own MAX_LOG_LINES cap — without this, a client that stays
+    /// caught up with the server never hits the "replace" fallback that would otherwise
+    /// reset _selectedLogs, so it grows unbounded for the lifetime of the process.
+    private const int MaxDisplayedLogLines = 5000;
     private string _logFilter = "";
 
     public MainWindow()
@@ -48,7 +52,11 @@ public sealed partial class MainWindow : Window
         _timer.Tick += (_, _) => Refresh();
         _timer.Start();
 
-        Closed += (_, _) => { _trayIcon?.Dispose(); };
+        // Closing the window (or "Quitter" in the tray menu, which also closes it) ends
+        // the process without running Engine's own cleanup-on-drop reliably — the OS
+        // reclaims the process before .NET finalizers run. Stop supervised app trees
+        // explicitly so they don't survive as orphans holding their ports.
+        Closed += (_, _) => { _engine.StopAll(); _trayIcon?.Dispose(); };
 
         RefreshNow();
     }
@@ -121,6 +129,11 @@ public sealed partial class MainWindow : Window
                 else if (view.Logs.Count > 0)
                 {
                     _selectedLogs.AddRange(view.Logs);
+                    var overflow = _selectedLogs.Count - MaxDisplayedLogLines;
+                    if (overflow > 0)
+                    {
+                        _selectedLogs.RemoveRange(0, overflow);
+                    }
                 }
                 _sinceSeq = view.LogsBaseSeq + (ulong)view.Logs.Count;
             }

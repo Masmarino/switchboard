@@ -208,24 +208,55 @@ impl Engine {
         }
         self.last_sample = Some(now);
 
-        let pids: Vec<sysinfo::Pid> = self
+        let roots: Vec<sysinfo::Pid> = self
             .handles
             .values()
             .filter_map(|h| *h.pgid.lock().unwrap())
             .map(|pid| sysinfo::Pid::from_u32(pid as u32))
             .collect();
-        if pids.is_empty() {
+        if roots.is_empty() {
             return;
         }
-        self.sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&pids), true);
+        // Chaque commande lancee (npm/ng/cargo...) genere des sous-process (node,
+        // esbuild, webpack workers...) qui portent la vraie consommation memoire —
+        // le process racine suivi dans `handles` ne represente souvent que quelques
+        // Mo. Il faut donc rafraichir tous les process du systeme pour reconstruire
+        // l'arbre via `parent()`, puis sommer chaque sous-arbre plutot que de ne lire
+        // que le PID racine.
+        self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+
+        let mut children: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
+        for (pid, process) in self.sys.processes() {
+            if let Some(parent) = process.parent() {
+                children.entry(parent).or_default().push(*pid);
+            }
+        }
 
         let mut changed = false;
         for (id, handle) in &self.handles {
-            let Some(pid) = *handle.pgid.lock().unwrap() else { continue };
-            let Some(process) = self.sys.process(sysinfo::Pid::from_u32(pid as u32)) else { continue };
+            let Some(root) = *handle.pgid.lock().unwrap() else { continue };
+            let root = sysinfo::Pid::from_u32(root as u32);
+            if self.sys.process(root).is_none() {
+                continue;
+            }
+            let mut cpu = 0.0f32;
+            let mut mem_bytes = 0u64;
+            let mut stack = vec![root];
+            let mut visited = std::collections::HashSet::new();
+            while let Some(pid) = stack.pop() {
+                if !visited.insert(pid) {
+                    continue;
+                }
+                if let Some(process) = self.sys.process(pid) {
+                    cpu += process.cpu_usage();
+                    mem_bytes += process.memory();
+                }
+                if let Some(kids) = children.get(&pid) {
+                    stack.extend(kids.iter().copied());
+                }
+            }
             if let Some(rt) = self.runtimes.get_mut(id) {
-                let cpu = process.cpu_usage();
-                let mem = process.memory() as f64 / 1_048_576.0;
+                let mem = mem_bytes as f64 / 1_048_576.0;
                 if resource_changed(rt.cpu_percent, cpu, rt.memory_mb, mem) {
                     changed = true;
                 }

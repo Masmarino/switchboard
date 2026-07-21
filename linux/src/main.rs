@@ -10,6 +10,10 @@ use gtk::{gdk, gio, glib};
 use uuid::Uuid;
 
 const APP_ID: &str = "com.skolln.switchboard";
+/// Mirrors the Rust engine's own MAX_LOG_LINES cap — without this, a client that stays
+/// caught up with the server never hits the "replace" fallback that would otherwise
+/// reset `selected_logs`, so it grows unbounded for the lifetime of the process.
+const MAX_DISPLAYED_LOG_LINES: usize = 5000;
 
 fn status_css_class(view: &AppView) -> &'static str {
     match view.status_label {
@@ -73,7 +77,12 @@ impl Ui {
                 if view.logs_replace {
                     *self.selected_logs.borrow_mut() = view.logs.clone();
                 } else if !view.logs.is_empty() {
-                    self.selected_logs.borrow_mut().extend(view.logs.iter().cloned());
+                    let mut logs = self.selected_logs.borrow_mut();
+                    logs.extend(view.logs.iter().cloned());
+                    let overflow = logs.len().saturating_sub(MAX_DISPLAYED_LOG_LINES);
+                    if overflow > 0 {
+                        logs.drain(0..overflow);
+                    }
                 }
                 self.since_seq.set(view.logs_base_seq + view.logs.len() as u64);
             }
@@ -340,6 +349,17 @@ fn build_ui(app: &adw::Application) {
     load_styles();
 
     let engine = Rc::new(RefCell::new(Engine::new()));
+
+    // `Engine`'s own `Drop` stops all running apps, but that only fires if the last
+    // `Rc<RefCell<Engine>>` reference is actually released — GTK signal-handler closures
+    // holding a clone can outlive `build_ui`'s own drop, so the shutdown app/child process
+    // trees can otherwise survive after the window closes. Stop them explicitly here.
+    {
+        let engine = engine.clone();
+        app.connect_shutdown(move |_| {
+            engine.borrow_mut().stop_all_running();
+        });
+    }
 
     let header_label = adw::WindowTitle::new("Switchboard", "");
     let header = adw::HeaderBar::builder().title_widget(&header_label).build();
