@@ -127,7 +127,7 @@ struct AddAppSheet: View {
         .padding(.bottom, 6)
     }
 
-    private let sectionTitleColor = Color(red: 0x04 / 255, green: 0x09 / 255, blue: 0x43 / 255)
+    private let sectionTitleColor = Color.switchboardAccent
     private let labelColumnWidth: CGFloat = 165
 
     @ViewBuilder

@@ -1,3 +1,4 @@
+mod about_dialog;
 mod add_dialog;
 
 use std::cell::{Cell, RefCell};
@@ -504,22 +505,7 @@ fn build_ui(app: &adw::Application) {
     }
     {
         let window = window.clone();
-        about_btn.connect_clicked(move |_| {
-            let dialog = gtk::AboutDialog::builder()
-                .transient_for(&window)
-                .modal(true)
-                .program_name("Switchboard")
-                .version("0.1.0")
-                .comments("Démarre, supervise et orchestre tes process de dev locaux — quel que soit le langage.")
-                .website("https://github.com/masmarino/switchboard")
-                .website_label("Code source (GPLv3)")
-                .license_type(gtk::License::Gpl30)
-                .authors(vec!["SkollN".to_string()])
-                .build();
-            dialog.add_credit_section("Développé par", &["SkollN — skolln.com"]);
-            dialog.add_credit_section("Découvre aussi", &["Alume — alume.skolln.com"]);
-            dialog.present();
-        });
+        about_btn.connect_clicked(move |_| about_dialog::show_about_dialog(&window));
     }
 
     ui.refresh_now();

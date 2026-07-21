@@ -365,29 +365,85 @@ public sealed partial class MainWindow : Window
 
     private async void OnAboutClicked(object sender, RoutedEventArgs e)
     {
-        var panel = new StackPanel { Spacing = 10 };
-        panel.Children.Add(new TextBlock
+        var headerPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        var iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "icon.ico");
+        if (File.Exists(iconPath))
+        {
+            var image = new Image
+            {
+                Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(iconPath)),
+                Width = 44,
+                Height = 44,
+            };
+            headerPanel.Children.Add(new Border { CornerRadius = new CornerRadius(11), Width = 44, Height = 44, Child = image });
+        }
+        var headerTextPanel = new StackPanel { Spacing = 2 };
+        headerTextPanel.Children.Add(new TextBlock { Text = "Switchboard", FontSize = 18, FontWeight = Microsoft.UI.Text.FontWeights.Bold });
+        headerTextPanel.Children.Add(new TextBlock { Text = "Version 0.1.0", FontSize = 12, Opacity = 0.6 });
+        headerPanel.Children.Add(headerTextPanel);
+
+        var introText = new TextBlock
         {
             Text = "Démarre, supervise et orchestre tes process de dev locaux — quel que soit le langage.",
             TextWrapping = TextWrapping.Wrap,
-        });
-        panel.Children.Add(new TextBlock { Text = "Version 0.1.0", Opacity = 0.6, FontSize = 12 });
+            FontSize = 13,
+            Opacity = 0.75,
+        };
 
-        var skolln = new HyperlinkButton { Content = "Développé par SkollN — skolln.com", NavigateUri = new Uri("https://skolln.com") };
-        var alume = new HyperlinkButton { Content = "Découvre aussi Alume — alume.skolln.com", NavigateUri = new Uri("https://alume.skolln.com") };
-        var source = new HyperlinkButton { Content = "Code source (GPLv3)", NavigateUri = new Uri("https://github.com/masmarino/switchboard") };
-        panel.Children.Add(skolln);
-        panel.Children.Add(alume);
-        panel.Children.Add(source);
+        var linksCard = MakeSectionCard(
+            "Liens",
+            MakeAboutLinkRow("", "Développé par SkollN", "skolln.com", "https://www.skolln.com"),
+            MakeAboutLinkRow("", "Découvre aussi Alume", "Agrégateur de contenus avec IA intégrée", "https://alume.skolln.com"),
+            MakeAboutLinkRow("", "Code source", "Open source sous licence GPLv3", "https://github.com/masmarino/switchboard"));
+
+        var panel = new StackPanel { Spacing = 20, Width = 340 };
+        panel.Children.Add(headerPanel);
+        panel.Children.Add(introText);
+        panel.Children.Add(linksCard);
 
         var dialog = new ContentDialog
         {
-            Title = "À propos de Switchboard",
+            // No Title: the custom header inside Content replaces the default dialog title bar,
+            // mirroring the add/edit app dialog's header treatment.
             Content = panel,
             CloseButtonText = "Fermer",
             XamlRoot = Content.XamlRoot,
         };
         await dialog.ShowAsync();
+    }
+
+    /// <summary>
+    /// A clickable "Liens" row: icon + title/subtitle + external-link glyph, wrapped in a
+    /// HyperlinkButton so it keeps the built-in URI-launch behavior of the plain links this
+    /// replaces, while visually matching the icon-led rows used on macOS/Linux.
+    /// </summary>
+    private static HyperlinkButton MakeAboutLinkRow(string glyph, string title, string subtitle, string uri)
+    {
+        var icon = new FontIcon { Glyph = glyph, FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 15, Foreground = SectionTitleBrush };
+        var textStack = new StackPanel { Spacing = 1 };
+        textStack.Children.Add(new TextBlock { Text = title, FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        textStack.Children.Add(new TextBlock { Text = subtitle, FontSize = 11, Opacity = 0.6 });
+        var chevron = new FontIcon { Glyph = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 10, Opacity = 0.5 };
+
+        var grid = new Grid { ColumnSpacing = 10 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(icon, 0);
+        Grid.SetColumn(textStack, 1);
+        Grid.SetColumn(chevron, 2);
+        grid.Children.Add(icon);
+        grid.Children.Add(textStack);
+        grid.Children.Add(chevron);
+
+        return new HyperlinkButton
+        {
+            NavigateUri = new Uri(uri),
+            Content = grid,
+            Padding = new Thickness(6),
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
     }
 
     private void OnLogFilterChanged(object sender, TextChangedEventArgs e)

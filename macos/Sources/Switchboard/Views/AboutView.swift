@@ -3,55 +3,112 @@ import SwiftUI
 
 struct AboutView: View {
     var body: some View {
-        VStack(spacing: 18) {
-            Image(nsImage: NSApplication.shared.applicationIconImage ?? NSImage())
-                .resizable()
-                .frame(width: 96, height: 96)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-
-            VStack(spacing: 4) {
-                Text("Switchboard").font(.title2.bold())
-                Text("Version 0.1.0").font(.caption).foregroundStyle(.secondary)
-            }
+        VStack(alignment: .leading, spacing: 20) {
+            header
 
             Text("Démarre, supervise et orchestre tes process de dev locaux — quel que soit le langage.")
-                .font(.callout)
-                .multilineTextAlignment(.center)
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: 280)
 
-            Divider()
-
-            VStack(spacing: 10) {
+            section("Liens") {
                 aboutLink(
+                    icon: "building.2",
                     title: "Développé par SkollN",
                     subtitle: "skolln.com",
                     url: "https://www.skolln.com"
                 )
+                Divider().padding(.leading, 38)
                 aboutLink(
+                    icon: "sparkles",
                     title: "Découvre aussi Alume",
                     subtitle: "Agrégateur de contenus avec IA intégrée",
                     url: "https://alume.skolln.com"
                 )
+                Divider().padding(.leading, 38)
                 aboutLink(
+                    icon: "chevron.left.forwardslash.chevron.right",
                     title: "Code source",
                     subtitle: "Open source sous licence GPLv3",
                     url: "https://github.com/masmarino/switchboard"
                 )
             }
         }
-        .padding(28)
-        .frame(width: 360)
+        .padding(20)
+        .frame(width: 380)
     }
 
-    private func aboutLink(title: String, subtitle: String, url: String) -> some View {
-        Link(destination: URL(string: url)!) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.subheadline.weight(.medium))
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(nsImage: NSApplication.shared.applicationIconImage ?? NSImage())
+                .resizable()
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Switchboard")
+                    .font(.system(size: 18, weight: .bold))
+                Text("Version 0.1.0")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Color.switchboardAccent)
+                .kerning(0.6)
+            VStack(alignment: .leading, spacing: 0) {
+                content()
+            }
+            .padding(.vertical, 4)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+
+    private func aboutLink(icon: String, title: String, subtitle: String, url: String) -> some View {
+        AboutLinkRow(icon: icon, title: title, subtitle: subtitle, url: URL(string: url)!)
+    }
+}
+
+private struct AboutLinkRow: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    let url: URL
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Link(destination: url) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .foregroundStyle(Color.switchboardAccent)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                isHovering ? Color.secondary.opacity(0.12) : .clear,
+                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+            )
         }
         .buttonStyle(.plain)
+        .onHover { hovering in isHovering = hovering }
     }
 }
