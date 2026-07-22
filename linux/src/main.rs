@@ -1,5 +1,6 @@
 mod about_dialog;
 mod add_dialog;
+mod config_export_dialog;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -42,6 +43,20 @@ fn load_styles() {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+/// Boite de message simple (bouton OK) pour signaler un import invalide ou vide.
+fn show_message(parent: &impl IsA<gtk::Window>, text: &str, secondary: &str) {
+    let dialog = gtk::MessageDialog::builder()
+        .transient_for(parent)
+        .modal(true)
+        .message_type(gtk::MessageType::Info)
+        .buttons(gtk::ButtonsType::Ok)
+        .text(text)
+        .secondary_text(secondary)
+        .build();
+    dialog.connect_response(|dialog, _| dialog.close());
+    dialog.present();
 }
 
 struct Ui {
@@ -384,6 +399,14 @@ fn build_ui(app: &adw::Application) {
     export_logs_btn.set_tooltip_text(Some("Exporter les logs…"));
     header.pack_end(&export_logs_btn);
 
+    let export_config_btn = gtk::Button::from_icon_name("document-send-symbolic");
+    export_config_btn.set_tooltip_text(Some("Exporter la config…"));
+    header.pack_end(&export_config_btn);
+
+    let import_config_btn = gtk::Button::from_icon_name("document-open-symbolic");
+    import_config_btn.set_tooltip_text(Some("Importer une config…"));
+    header.pack_end(&import_config_btn);
+
     let about_btn = gtk::Button::from_icon_name("help-about-symbolic");
     about_btn.set_tooltip_text(Some("À propos de Switchboard"));
     header.pack_end(&about_btn);
@@ -451,6 +474,76 @@ fn build_ui(app: &adw::Application) {
             add_dialog::show_app_dialog(&window, None, move |draft| {
                 engine.borrow_mut().add_app(draft);
                 this_weak();
+            });
+        });
+    }
+    {
+        let ui = ui.clone();
+        let window = window.clone();
+        export_config_btn.connect_clicked(move |_| {
+            let apps = ui.engine.borrow_mut().list_apps(None);
+            let ui = ui.clone();
+            config_export_dialog::show_export_dialog(&window, &apps, move |ids, include_env_vars| {
+                ui.engine.borrow().export_config(&ids, include_env_vars)
+            });
+        });
+    }
+    {
+        let ui = ui.clone();
+        let window = window.clone();
+        import_config_btn.connect_clicked(move |_| {
+            let file_dialog = gtk::FileDialog::builder().title("Importer une config").build();
+            let ui = ui.clone();
+            let window = window.clone();
+            glib::spawn_future_local(async move {
+                let Ok(file) = file_dialog.open_future(Some(&window)).await else { return };
+                let Some(path) = file.path() else { return };
+                let Ok(contents) = std::fs::read_to_string(&path) else {
+                    show_message(&window, "Fichier invalide", "Impossible de lire ce fichier.");
+                    return;
+                };
+                let Some(preview) = ui.engine.borrow().preview_import(&contents) else {
+                    show_message(&window, "Fichier invalide", "Ce fichier ne contient pas une configuration Switchboard valide.");
+                    return;
+                };
+                if preview.to_add.is_empty() && preview.to_replace.is_empty() {
+                    show_message(&window, "Rien à importer", "Ce fichier ne contient aucune app à ajouter ou remplacer.");
+                    return;
+                }
+                let mut detail = String::new();
+                if !preview.to_add.is_empty() {
+                    detail.push_str(&format!(
+                        "{} app(s) seront ajoutées : {}\n",
+                        preview.to_add.len(),
+                        preview.to_add.join(", ")
+                    ));
+                }
+                if !preview.to_replace.is_empty() {
+                    detail.push_str(&format!(
+                        "{} app(s) seront remplacées : {}",
+                        preview.to_replace.len(),
+                        preview.to_replace.join(", ")
+                    ));
+                }
+                let confirm = gtk::MessageDialog::builder()
+                    .transient_for(&window)
+                    .modal(true)
+                    .message_type(gtk::MessageType::Question)
+                    .text("Importer cette configuration ?")
+                    .secondary_text(&detail)
+                    .build();
+                confirm.add_button("Annuler", gtk::ResponseType::Cancel);
+                confirm.add_button("Importer", gtk::ResponseType::Accept);
+                confirm.set_default_response(gtk::ResponseType::Accept);
+                let ui = ui.clone();
+                confirm.connect_response(move |dialog, response| {
+                    if response == gtk::ResponseType::Accept {
+                        ui.engine.borrow_mut().apply_import(&contents);
+                        ui.refresh_now();
+                    }
+                    dialog.close();
+                });
+                confirm.present();
             });
         });
     }

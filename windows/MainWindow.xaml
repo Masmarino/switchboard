@@ -24,6 +24,8 @@
                 <Button x:Name="AddButton" Content="&#xE710;" FontFamily="Segoe MDL2 Assets" Click="OnAddAppClicked" ToolTipService.ToolTip="Ajouter une app" />
                 <Button x:Name="StartAllButton" Content="&#xE768;" FontFamily="Segoe MDL2 Assets" Click="OnStartAllClicked" ToolTipService.ToolTip="Tout démarrer" />
                 <Button x:Name="StopAllButton" Content="&#xE71A;" FontFamily="Segoe MDL2 Assets" Click="OnStopAllClicked" ToolTipService.ToolTip="Tout arrêter" />
+                <Button x:Name="ExportConfigButton" Content="&#xE78C;" FontFamily="Segoe MDL2 Assets" Click="OnExportConfigClicked" ToolTipService.ToolTip="Exporter la config…" />
+                <Button x:Name="ImportConfigButton" Content="&#xE8B5;" FontFamily="Segoe MDL2 Assets" Click="OnImportConfigClicked" ToolTipService.ToolTip="Importer une config…" />
             </StackPanel>
 
             <ListView x:Name="AppListView" Grid.Row="1" SelectionMode="Single"

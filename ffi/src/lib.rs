@@ -8,7 +8,7 @@ use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use switchboard_core::{AppDraft, AppKind, Engine};
+use switchboard_core::{AppDraft, AppKind, Engine, ImportSummary};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -23,6 +23,17 @@ unsafe fn c_str_to_string(ptr: *const c_char) -> Option<String> {
 
 fn string_to_c(s: String) -> *mut c_char {
     CString::new(s).map(CString::into_raw).unwrap_or(std::ptr::null_mut())
+}
+
+/// Convertit un tableau JSON de chaines UUID (`["uuid1","uuid2"]`) en `Vec<Uuid>` ;
+/// les entrees invalides sont simplement ignorees plutot que de faire echouer tout
+/// l'appel.
+fn parse_id_list(json: &str) -> Vec<Uuid> {
+    serde_json::from_str::<Vec<String>>(json)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|s| Uuid::from_str(s).ok())
+        .collect()
 }
 
 /// Miroir JSON de `AppDraft` — c'est le format echange par `switchboard_engine_add_app_json`
@@ -215,6 +226,64 @@ pub unsafe extern "C" fn switchboard_engine_start_all(engine: *mut Engine) {
 pub unsafe extern "C" fn switchboard_engine_stop_all(engine: *mut Engine) {
     let engine = unsafe { &mut *engine };
     engine.stop_all_running();
+}
+
+/// Exporte un sous-ensemble d'apps en JSON, pret a etre ecrit dans un fichier.
+/// `ids_json` est un tableau JSON de chaines UUID. La chaine retournee doit etre
+/// liberee avec [`switchboard_string_free`].
+///
+/// # Safety
+/// `engine` doit etre un pointeur valide. `ids_json` doit etre une chaine C valide.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn switchboard_engine_export_config_json(
+    engine: *mut Engine,
+    ids_json: *const c_char,
+    include_env_vars: bool,
+) -> *mut c_char {
+    let engine = unsafe { &*engine };
+    let Some(ids_json) = (unsafe { c_str_to_string(ids_json) }) else { return std::ptr::null_mut() };
+    let ids = parse_id_list(&ids_json);
+    string_to_c(engine.export_config(&ids, include_env_vars))
+}
+
+/// Calcule l'apercu de fusion (compte + noms) sans rien modifier. Retourne NULL si
+/// `config_json` n'est pas un fichier de config Switchboard valide.
+///
+/// # Safety
+/// `engine` doit etre un pointeur valide. `config_json` doit etre une chaine C valide.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn switchboard_engine_preview_import_json(
+    engine: *mut Engine,
+    config_json: *const c_char,
+) -> *mut c_char {
+    let engine = unsafe { &*engine };
+    let Some(json) = (unsafe { c_str_to_string(config_json) }) else { return std::ptr::null_mut() };
+    match engine.preview_import(&json) {
+        Some(summary) => string_to_c(serialize_summary(&summary)),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Applique reellement la fusion et persiste. Retourne NULL si `config_json` n'est
+/// pas un fichier de config Switchboard valide (rien n'est modifie dans ce cas).
+///
+/// # Safety
+/// `engine` doit etre un pointeur valide. `config_json` doit etre une chaine C valide.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn switchboard_engine_apply_import_json(
+    engine: *mut Engine,
+    config_json: *const c_char,
+) -> *mut c_char {
+    let engine = unsafe { &mut *engine };
+    let Some(json) = (unsafe { c_str_to_string(config_json) }) else { return std::ptr::null_mut() };
+    match engine.apply_import(&json) {
+        Some(summary) => string_to_c(serialize_summary(&summary)),
+        None => std::ptr::null_mut(),
+    }
+}
+
+fn serialize_summary(summary: &ImportSummary) -> String {
+    serde_json::to_string(summary).unwrap_or_else(|_| "{\"to_add\":[],\"to_replace\":[],\"invalid\":0}".to_string())
 }
 
 /// Libere une chaine retournee par une fonction de ce module.

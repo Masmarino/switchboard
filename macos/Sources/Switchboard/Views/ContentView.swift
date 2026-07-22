@@ -80,6 +80,11 @@ struct ContentView: View {
         .sheet(item: $state.editingApp) { app in
             AddAppSheet(existing: app) { draft in state.updateApp(id: app.id, draft: draft) }
         }
+        .sheet(isPresented: $state.exportSheetPresented) {
+            ConfigExportSheet(apps: state.apps) { ids, includeEnvVars in
+                state.exportConfig(ids: ids, includeEnvVars: includeEnvVars)
+            }
+        }
         .task { state.start() }
     }
 

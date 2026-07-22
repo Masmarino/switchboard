@@ -108,6 +108,36 @@ void switchboard_engine_start_all(struct Engine *engine);
 void switchboard_engine_stop_all(struct Engine *engine);
 
 /**
+ * Exporte un sous-ensemble d'apps en JSON, pret a etre ecrit dans un fichier.
+ * `ids_json` est un tableau JSON de chaines UUID. La chaine retournee doit etre
+ * liberee avec [`switchboard_string_free`].
+ *
+ * # Safety
+ * `engine` doit etre un pointeur valide. `ids_json` doit etre une chaine C valide.
+ */
+char *switchboard_engine_export_config_json(struct Engine *engine,
+                                            const char *ids_json,
+                                            bool include_env_vars);
+
+/**
+ * Calcule l'apercu de fusion (compte + noms) sans rien modifier. Retourne NULL si
+ * `config_json` n'est pas un fichier de config Switchboard valide.
+ *
+ * # Safety
+ * `engine` doit etre un pointeur valide. `config_json` doit etre une chaine C valide.
+ */
+char *switchboard_engine_preview_import_json(struct Engine *engine, const char *config_json);
+
+/**
+ * Applique reellement la fusion et persiste. Retourne NULL si `config_json` n'est
+ * pas un fichier de config Switchboard valide (rien n'est modifie dans ce cas).
+ *
+ * # Safety
+ * `engine` doit etre un pointeur valide. `config_json` doit etre une chaine C valide.
+ */
+char *switchboard_engine_apply_import_json(struct Engine *engine, const char *config_json);
+
+/**
  * Libere une chaine retournee par une fonction de ce module.
  *
  * # Safety

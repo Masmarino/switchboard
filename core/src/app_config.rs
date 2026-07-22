@@ -42,6 +42,13 @@ impl Default for AppKind {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ImportSummary {
+    pub to_add: Vec<String>,
+    pub to_replace: Vec<String>,
+    pub invalid: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfigList {
     pub apps: Vec<AppConfig>,
@@ -60,6 +67,57 @@ impl AppConfigList {
         if let Some(app) = self.apps.iter_mut().find(|a| a.id == id) {
             mutate(app);
         }
+    }
+
+    /// Copie filtree pour l'export : ne garde que les apps dont l'id est dans `ids`,
+    /// et vide `env_vars` si `include_env_vars` est faux.
+    pub fn export_subset(&self, ids: &[Uuid], include_env_vars: bool) -> AppConfigList {
+        let apps = self
+            .apps
+            .iter()
+            .filter(|a| ids.contains(&a.id))
+            .cloned()
+            .map(|mut a| {
+                if !include_env_vars {
+                    a.env_vars.clear();
+                }
+                a
+            })
+            .collect();
+        AppConfigList { apps }
+    }
+
+    /// Fusionne `incoming` dans `self`. Dedoublonnage par nom (trim + minuscules
+    /// Unicode) : une app dont le nom matche une app locale existante la remplace
+    /// en place (meme id conserve) ; une app sans correspondance est ajoutee avec
+    /// un nouvel id (jamais celui du fichier importe, pour eviter toute collision).
+    /// Les entrees au nom vide (apres trim) sont ignorees et comptees dans `invalid`.
+    pub fn merge_import(&mut self, incoming: AppConfigList) -> ImportSummary {
+        let mut summary = ImportSummary::default();
+        for mut incoming_app in incoming.apps {
+            let trimmed_name = incoming_app.name.trim().to_string();
+            if trimmed_name.is_empty() {
+                summary.invalid += 1;
+                continue;
+            }
+            incoming_app.name = trimmed_name.clone();
+            let existing = self
+                .apps
+                .iter_mut()
+                .find(|a| a.name.trim().to_lowercase() == trimmed_name.to_lowercase());
+            match existing {
+                Some(existing_app) => {
+                    let existing_id = existing_app.id;
+                    *existing_app = AppConfig { id: existing_id, ..incoming_app };
+                    summary.to_replace.push(trimmed_name);
+                }
+                None => {
+                    summary.to_add.push(trimmed_name.clone());
+                    self.apps.push(AppConfig { id: Uuid::new_v4(), ..incoming_app });
+                }
+            }
+        }
+        summary
     }
 
     pub fn to_json(&self) -> serde_json::Result<String> {
@@ -173,5 +231,99 @@ mod tests {
         assert_eq!(list.apps[0].start_order, 0);
         assert!(!list.apps[0].auto_restart);
         assert!(list.apps[0].env_vars.is_empty());
+    }
+
+    #[test]
+    fn export_subset_filters_by_id_and_strips_env_vars_when_excluded() {
+        let mut list = AppConfigList::default();
+        let a = AppConfig { id: Uuid::new_v4(), name: "A".to_string(), env_vars: vec![("K".to_string(), "V".to_string())], ..Default::default() };
+        let a_id = a.id;
+        let b = AppConfig { id: Uuid::new_v4(), name: "B".to_string(), ..Default::default() };
+        list.add(a);
+        list.add(b);
+
+        let subset = list.export_subset(&[a_id], false);
+        assert_eq!(subset.apps.len(), 1);
+        assert_eq!(subset.apps[0].name, "A");
+        assert!(subset.apps[0].env_vars.is_empty());
+    }
+
+    #[test]
+    fn export_subset_keeps_env_vars_when_included() {
+        let mut list = AppConfigList::default();
+        let a = AppConfig { name: "A".to_string(), env_vars: vec![("K".to_string(), "V".to_string())], ..Default::default() };
+        let a_id = a.id;
+        list.add(a);
+
+        let subset = list.export_subset(&[a_id], true);
+        assert_eq!(subset.apps[0].env_vars, vec![("K".to_string(), "V".to_string())]);
+    }
+
+    #[test]
+    fn merge_import_replaces_existing_app_by_name_case_insensitive_and_keeps_its_id() {
+        let mut list = AppConfigList::default();
+        let existing = AppConfig { id: Uuid::new_v4(), name: "Alume API".to_string(), command: "old".to_string(), ..Default::default() };
+        let existing_id = existing.id;
+        list.add(existing);
+
+        let mut incoming = AppConfigList::default();
+        incoming.add(AppConfig { id: Uuid::new_v4(), name: " alume api ".to_string(), command: "new".to_string(), ..Default::default() });
+
+        let summary = list.merge_import(incoming);
+
+        assert_eq!(summary.to_replace, vec!["alume api".to_string()]);
+        assert!(summary.to_add.is_empty());
+        assert_eq!(list.apps.len(), 1);
+        assert_eq!(list.apps[0].id, existing_id);
+        assert_eq!(list.apps[0].command, "new");
+    }
+
+    #[test]
+    fn merge_import_adds_new_app_with_a_fresh_id() {
+        let mut list = AppConfigList::default();
+        let mut incoming = AppConfigList::default();
+        let incoming_app = AppConfig { name: "Brand New".to_string(), ..Default::default() };
+        let incoming_id = incoming_app.id;
+        incoming.add(incoming_app);
+
+        let summary = list.merge_import(incoming);
+
+        assert_eq!(summary.to_add, vec!["Brand New".to_string()]);
+        assert!(summary.to_replace.is_empty());
+        assert_eq!(list.apps.len(), 1);
+        assert_ne!(list.apps[0].id, incoming_id);
+    }
+
+    #[test]
+    fn merge_import_counts_blank_name_as_invalid() {
+        let mut list = AppConfigList::default();
+        let mut incoming = AppConfigList::default();
+        incoming.add(AppConfig { name: "   ".to_string(), ..Default::default() });
+
+        let summary = list.merge_import(incoming);
+
+        assert_eq!(summary.invalid, 1);
+        assert!(list.apps.is_empty());
+    }
+
+    #[test]
+    fn merge_import_matches_names_using_unicode_case_folding() {
+        // "É" (U+00C9) lowercases to "é" (U+00E9) only via full Unicode lowercasing;
+        // a naive `.to_ascii_lowercase()` would leave it untouched and miss the match.
+        let mut list = AppConfigList::default();
+        let existing = AppConfig { id: Uuid::new_v4(), name: "Éditeur".to_string(), command: "old".to_string(), ..Default::default() };
+        let existing_id = existing.id;
+        list.add(existing);
+
+        let mut incoming = AppConfigList::default();
+        incoming.add(AppConfig { id: Uuid::new_v4(), name: "éditeur".to_string(), command: "new".to_string(), ..Default::default() });
+
+        let summary = list.merge_import(incoming);
+
+        assert_eq!(summary.to_replace, vec!["éditeur".to_string()]);
+        assert!(summary.to_add.is_empty());
+        assert_eq!(list.apps.len(), 1);
+        assert_eq!(list.apps[0].id, existing_id);
+        assert_eq!(list.apps[0].command, "new");
     }
 }

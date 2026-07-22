@@ -71,6 +71,41 @@ final class DevtoolEngine {
         switchboard_engine_stop_all(handle)
     }
 
+    func exportConfig(ids: [String], includeEnvVars: Bool) -> String? {
+        guard let idsData = try? JSONEncoder().encode(ids), let idsJSON = String(data: idsData, encoding: .utf8) else {
+            return nil
+        }
+        var result: String?
+        withCStrings(idsJSON) { idsPtr in
+            if let raw = switchboard_engine_export_config_json(handle, idsPtr, includeEnvVars) {
+                defer { switchboard_string_free(raw) }
+                result = String(cString: raw)
+            }
+        }
+        return result
+    }
+
+    func previewImportConfig(json: String) -> ImportSummary? {
+        var result: ImportSummary?
+        withCStrings(json) { jsonPtr in result = decodeSummary(switchboard_engine_preview_import_json(handle, jsonPtr)) }
+        return result
+    }
+
+    func applyImportConfig(json: String) -> ImportSummary? {
+        var result: ImportSummary?
+        withCStrings(json) { jsonPtr in result = decodeSummary(switchboard_engine_apply_import_json(handle, jsonPtr)) }
+        return result
+    }
+
+    private func decodeSummary(_ raw: UnsafeMutablePointer<CChar>?) -> ImportSummary? {
+        guard let raw else { return nil }
+        defer { switchboard_string_free(raw) }
+        let data = Data(String(cString: raw).utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try? decoder.decode(ImportSummary.self, from: data)
+    }
+
     func clearLogs(id: String) {
         withCStrings(id) { id in switchboard_engine_clear_logs(handle, id) }
     }

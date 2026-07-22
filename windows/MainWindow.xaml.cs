@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Linq;
 using Microsoft.UI;
 using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Xaml;
@@ -444,6 +445,118 @@ public sealed partial class MainWindow : Window
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
+    }
+
+    private async void OnExportConfigClicked(object sender, RoutedEventArgs e)
+    {
+        var checkboxes = new List<(string Id, CheckBox Box)>();
+        var appsGroup = new StackPanel { Spacing = 6 };
+        foreach (var app in _apps)
+        {
+            var box = new CheckBox { Content = app.Name, IsChecked = true };
+            checkboxes.Add((app.Id, box));
+            appsGroup.Children.Add(box);
+        }
+        var includeEnvVarsBox = new CheckBox { Content = "Inclure les variables d'environnement", IsChecked = false };
+
+        var panel = new StackPanel { Spacing = 20, Width = 340 };
+        panel.Children.Add(MakeSectionCard("Apps à exporter", appsGroup));
+        panel.Children.Add(MakeSectionCard("Options", includeEnvVarsBox));
+
+        var dialog = new ContentDialog
+        {
+            Title = "Exporter la config",
+            Content = new ScrollViewer { Content = panel, MaxHeight = 480 },
+            PrimaryButtonText = "Exporter…",
+            CloseButtonText = "Annuler",
+            XamlRoot = Content.XamlRoot,
+        };
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        var selectedIds = checkboxes.Where(c => c.Box.IsChecked == true).Select(c => c.Id).ToList();
+        if (selectedIds.Count == 0)
+        {
+            return;
+        }
+
+        var json = _engine.ExportConfig(selectedIds, includeEnvVarsBox.IsChecked == true);
+
+        var savePicker = new Windows.Storage.Pickers.FileSavePicker();
+        savePicker.FileTypeChoices.Add("Configuration JSON", new List<string> { ".json" });
+        savePicker.SuggestedFileName = "switchboard-config";
+        var pickerHwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        WinRT.Interop.InitializeWithWindow.Initialize(savePicker, pickerHwnd);
+        var file = await savePicker.PickSaveFileAsync();
+        if (file is not null)
+        {
+            await Windows.Storage.FileIO.WriteTextAsync(file, json);
+        }
+    }
+
+    private async void OnImportConfigClicked(object sender, RoutedEventArgs e)
+    {
+        var openPicker = new Windows.Storage.Pickers.FileOpenPicker();
+        openPicker.FileTypeFilter.Add(".json");
+        var pickerHwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        WinRT.Interop.InitializeWithWindow.Initialize(openPicker, pickerHwnd);
+        var file = await openPicker.PickSingleFileAsync();
+        if (file is null)
+        {
+            return;
+        }
+
+        var json = await Windows.Storage.FileIO.ReadTextAsync(file);
+        var preview = _engine.PreviewImportConfig(json);
+        if (preview is null)
+        {
+            await ShowMessageDialog("Fichier invalide", "Ce fichier ne contient pas une configuration Switchboard valide.");
+            return;
+        }
+        if (preview.ToAdd.Count == 0 && preview.ToReplace.Count == 0)
+        {
+            await ShowMessageDialog("Rien à importer", "Ce fichier ne contient aucune app à ajouter ou remplacer.");
+            return;
+        }
+
+        var lines = new List<string>();
+        if (preview.ToAdd.Count > 0)
+        {
+            lines.Add($"{preview.ToAdd.Count} app(s) seront ajoutées : {string.Join(", ", preview.ToAdd)}");
+        }
+        if (preview.ToReplace.Count > 0)
+        {
+            lines.Add($"{preview.ToReplace.Count} app(s) seront remplacées : {string.Join(", ", preview.ToReplace)}");
+        }
+
+        var confirmDialog = new ContentDialog
+        {
+            Title = "Importer cette configuration ?",
+            Content = string.Join("\n", lines),
+            PrimaryButtonText = "Importer",
+            CloseButtonText = "Annuler",
+            XamlRoot = Content.XamlRoot,
+        };
+        if (await confirmDialog.ShowAsync() == ContentDialogResult.Primary)
+        {
+            _engine.ApplyImportConfig(json);
+            RefreshNow();
+        }
+    }
+
+    private async Task ShowMessageDialog(string title, string message)
+    {
+        var dialog = new ContentDialog
+        {
+            Title = title,
+            Content = message,
+            CloseButtonText = "OK",
+            XamlRoot = Content.XamlRoot,
+        };
+        await dialog.ShowAsync();
     }
 
     private void OnLogFilterChanged(object sender, TextChangedEventArgs e)

@@ -26,6 +26,9 @@ public sealed class DevtoolEngine : IDisposable
     [DllImport(Dll)] private static extern void switchboard_engine_stop_all(IntPtr engine);
     [DllImport(Dll)] private static extern void switchboard_engine_clear_logs(IntPtr engine, string id);
     [DllImport(Dll)] private static extern bool switchboard_engine_export_logs(IntPtr engine, string id, string path);
+    [DllImport(Dll)] private static extern IntPtr switchboard_engine_export_config_json(IntPtr engine, string idsJson, bool includeEnvVars);
+    [DllImport(Dll)] private static extern IntPtr switchboard_engine_preview_import_json(IntPtr engine, string configJson);
+    [DllImport(Dll)] private static extern IntPtr switchboard_engine_apply_import_json(IntPtr engine, string configJson);
     [DllImport(Dll)] private static extern void switchboard_string_free(IntPtr s);
 
     private readonly IntPtr _handle;
@@ -71,6 +74,38 @@ public sealed class DevtoolEngine : IDisposable
     public void ClearLogs(string id) => switchboard_engine_clear_logs(_handle, id);
 
     public bool ExportLogs(string id, string path) => switchboard_engine_export_logs(_handle, id, path);
+
+    public string ExportConfig(List<string> ids, bool includeEnvVars)
+    {
+        var raw = switchboard_engine_export_config_json(_handle, JsonSerializer.Serialize(ids), includeEnvVars);
+        if (raw == IntPtr.Zero) return "{}";
+        try
+        {
+            return Marshal.PtrToStringUTF8(raw) ?? "{}";
+        }
+        finally
+        {
+            switchboard_string_free(raw);
+        }
+    }
+
+    public ImportSummary? PreviewImportConfig(string configJson) => DecodeSummary(switchboard_engine_preview_import_json(_handle, configJson));
+
+    public ImportSummary? ApplyImportConfig(string configJson) => DecodeSummary(switchboard_engine_apply_import_json(_handle, configJson));
+
+    private static ImportSummary? DecodeSummary(IntPtr raw)
+    {
+        if (raw == IntPtr.Zero) return null;
+        try
+        {
+            var json = Marshal.PtrToStringUTF8(raw);
+            return json is null ? null : JsonSerializer.Deserialize<ImportSummary>(json);
+        }
+        finally
+        {
+            switchboard_string_free(raw);
+        }
+    }
 
     public void Dispose() => switchboard_engine_free(_handle);
 }

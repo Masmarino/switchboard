@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import Observation
+import UniformTypeIdentifiers
 import UserNotifications
 
 @MainActor
@@ -26,6 +28,7 @@ final class AppState {
         }
     }
     var addSheetPresented = false
+    var exportSheetPresented = false
     var editingApp: AppEntry?
     var logFilter = ""
 
@@ -163,5 +166,53 @@ final class AppState {
     func updateApp(id: String, draft: AppDraftPayload) {
         engine.updateApp(id: id, draft: draft)
         refresh(force: true)
+    }
+
+    func exportConfig(ids: [String], includeEnvVars: Bool) -> String? {
+        engine.exportConfig(ids: ids, includeEnvVars: includeEnvVars)
+    }
+
+    /// Point d'entree unique du flux d'import : panneau d'ouverture natif -> apercu
+    /// -> confirmation -> application. Auto-suffisant (pas de sheet SwiftUI
+    /// necessaire), contrairement a l'export qui a besoin d'une UI de selection
+    /// personnalisee.
+    func importConfig() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url, let json = try? String(contentsOf: url, encoding: .utf8) else {
+            return
+        }
+        guard let preview = engine.previewImportConfig(json: json) else {
+            showAlert(title: "Fichier invalide", message: "Ce fichier ne contient pas une configuration Switchboard valide.")
+            return
+        }
+        if preview.toAdd.isEmpty && preview.toReplace.isEmpty {
+            showAlert(title: "Rien à importer", message: "Ce fichier ne contient aucune app à ajouter ou remplacer.")
+            return
+        }
+        var lines: [String] = []
+        if !preview.toAdd.isEmpty {
+            lines.append("\(preview.toAdd.count) app(s) seront ajoutées : \(preview.toAdd.joined(separator: ", "))")
+        }
+        if !preview.toReplace.isEmpty {
+            lines.append("\(preview.toReplace.count) app(s) seront remplacées : \(preview.toReplace.joined(separator: ", "))")
+        }
+        let alert = NSAlert()
+        alert.messageText = "Importer cette configuration ?"
+        alert.informativeText = lines.joined(separator: "\n")
+        alert.addButton(withTitle: "Importer")
+        alert.addButton(withTitle: "Annuler")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        _ = engine.applyImportConfig(json: json)
+        refresh(force: true)
+    }
+
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 }

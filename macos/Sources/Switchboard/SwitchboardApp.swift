@@ -30,6 +30,18 @@ struct SwitchboardApp: App {
                     openWindow(id: "about")
                 }
             }
+
+            CommandGroup(after: .newItem) {
+                Button("Exporter la config…") {
+                    state.exportSheetPresented = true
+                }
+                .keyboardShortcut("e", modifiers: .command)
+
+                Button("Importer une config…") {
+                    state.importConfig()
+                }
+                .keyboardShortcut("i", modifiers: .command)
+            }
         }
 
         WindowGroup(id: "about") {

@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-use crate::app_config::{AppConfig, AppConfigList, AppKind};
+use crate::app_config::{AppConfig, AppConfigList, AppKind, ImportSummary};
 use crate::health::spawn_health_watcher;
 use crate::log_stream::Event;
 use crate::process_manager::{kill_process_group, run_app_thread, AppStatus, RunningHandle};
@@ -366,6 +366,32 @@ impl Engine {
         self.persist();
     }
 
+    /// Exporte un sous-ensemble d'apps en JSON, pret a etre ecrit dans un fichier.
+    pub fn export_config(&self, ids: &[Uuid], include_env_vars: bool) -> String {
+        self.config.export_subset(ids, include_env_vars).to_json().unwrap_or_default()
+    }
+
+    /// Calcule l'apercu de fusion sans rien modifier — utilise pour le message de
+    /// confirmation avant import. `None` si `json` n'est pas un `AppConfigList` valide.
+    pub fn preview_import(&self, json: &str) -> Option<ImportSummary> {
+        let incoming = AppConfigList::from_json(json).ok()?;
+        Some(self.config.clone().merge_import(incoming))
+    }
+
+    /// Applique reellement la fusion et persiste. Seed un `AppRuntime` pour chaque
+    /// app fraichement ajoutee (les apps remplacees gardent leur runtime existant,
+    /// exactement comme `update_app` ne touche jamais `self.runtimes`). `None` si
+    /// `json` n'est pas un `AppConfigList` valide — rien n'est modifie dans ce cas.
+    pub fn apply_import(&mut self, json: &str) -> Option<ImportSummary> {
+        let incoming = AppConfigList::from_json(json).ok()?;
+        let summary = self.config.merge_import(incoming);
+        for app in &self.config.apps {
+            self.runtimes.entry(app.id).or_insert_with(AppRuntime::new);
+        }
+        self.persist();
+        Some(summary)
+    }
+
     pub fn clear_logs(&mut self, id: Uuid) {
         if let Some(rt) = self.runtimes.get_mut(&id) {
             rt.clear_logs();
@@ -536,6 +562,93 @@ mod tests {
         assert_eq!(app.url, Some("http://localhost:1234".to_string()));
         assert!(app.auto_restart);
         assert_eq!(app.start_order, 3);
+    }
+
+    #[test]
+    fn export_config_returns_json_containing_only_selected_ids() {
+        let mut engine = temp_engine();
+        let kept_id = engine.add_app(AppDraft { name: "Kept".to_string(), ..base_draft() });
+        engine.add_app(AppDraft { name: "Dropped".to_string(), ..base_draft() });
+
+        let json = engine.export_config(&[kept_id], false);
+        let exported = AppConfigList::from_json(&json).expect("valid json");
+
+        assert_eq!(exported.apps.len(), 1);
+        assert_eq!(exported.apps[0].name, "Kept");
+    }
+
+    #[test]
+    fn export_config_strips_env_vars_when_excluded() {
+        let mut engine = temp_engine();
+        let id = engine.add_app(AppDraft {
+            name: "X".to_string(),
+            env_vars: vec![("K".to_string(), "V".to_string())],
+            ..base_draft()
+        });
+
+        let json = engine.export_config(&[id], false);
+        let exported = AppConfigList::from_json(&json).expect("valid json");
+
+        assert!(exported.apps[0].env_vars.is_empty());
+    }
+
+    #[test]
+    fn preview_import_does_not_mutate_engine_config() {
+        let mut engine = temp_engine();
+        engine.add_app(AppDraft { name: "Existing".to_string(), ..base_draft() });
+
+        let mut incoming = AppConfigList::default();
+        incoming.add(AppConfig { name: "New One".to_string(), ..Default::default() });
+        let json = incoming.to_json().expect("serialize");
+
+        let summary = engine.preview_import(&json).expect("valid json");
+
+        assert_eq!(summary.to_add, vec!["New One".to_string()]);
+        assert_eq!(engine.config.apps.len(), 1);
+        assert_eq!(engine.config.apps[0].name, "Existing");
+    }
+
+    #[test]
+    fn apply_import_adds_new_apps_and_seeds_their_runtime() {
+        let mut engine = temp_engine();
+        let mut incoming = AppConfigList::default();
+        incoming.add(AppConfig { name: "New One".to_string(), ..Default::default() });
+        let json = incoming.to_json().expect("serialize");
+
+        let summary = engine.apply_import(&json).expect("valid json");
+
+        assert_eq!(summary.to_add, vec!["New One".to_string()]);
+        assert_eq!(engine.config.apps.len(), 1);
+        let new_id = engine.config.apps[0].id;
+        assert!(engine.runtimes.contains_key(&new_id));
+    }
+
+    #[test]
+    fn apply_import_replaces_existing_app_preserving_id_and_runtime() {
+        let mut engine = temp_engine();
+        let existing_id = engine.add_app(AppDraft { name: "Alume API".to_string(), ..base_draft() });
+
+        let mut incoming = AppConfigList::default();
+        incoming.add(AppConfig { name: "Alume API".to_string(), command: "new-command".to_string(), ..Default::default() });
+        let json = incoming.to_json().expect("serialize");
+
+        let summary = engine.apply_import(&json).expect("valid json");
+
+        assert_eq!(summary.to_replace, vec!["Alume API".to_string()]);
+        assert_eq!(engine.config.apps.len(), 1);
+        assert_eq!(engine.config.apps[0].id, existing_id);
+        assert_eq!(engine.config.apps[0].command, "new-command");
+        assert!(engine.runtimes.contains_key(&existing_id));
+    }
+
+    #[test]
+    fn apply_import_returns_none_for_invalid_json_and_does_not_mutate() {
+        let mut engine = temp_engine();
+        engine.add_app(AppDraft { name: "Existing".to_string(), ..base_draft() });
+
+        assert!(engine.apply_import("not valid json").is_none());
+        assert_eq!(engine.config.apps.len(), 1);
+        assert_eq!(engine.config.apps[0].name, "Existing");
     }
 
     #[test]
