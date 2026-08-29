@@ -15,8 +15,9 @@ pub fn spawn_health_watcher(id: Uuid, url: String, stop_requested: Arc<AtomicBoo
     std::thread::spawn(move || {
         // Laisse le process le temps de demarrer avant le premier ping.
         std::thread::sleep(Duration::from_secs(1));
+        let agent = ureq::Agent::config_builder().timeout_global(Some(REQUEST_TIMEOUT)).build().new_agent();
         while !stop_requested.load(Ordering::SeqCst) {
-            let healthy = ping(&url);
+            let healthy = ping(&agent, &url);
             if tx.send(Event::HealthChanged(id, healthy)).is_err() {
                 return;
             }
@@ -25,13 +26,6 @@ pub fn spawn_health_watcher(id: Uuid, url: String, stop_requested: Arc<AtomicBoo
     });
 }
 
-fn ping(url: &str) -> bool {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(REQUEST_TIMEOUT))
-        .build()
-        .new_agent()
-        .get(url)
-        .call()
-        .map(|resp| resp.status().as_u16() < 500)
-        .unwrap_or(false)
+fn ping(agent: &ureq::Agent, url: &str) -> bool {
+    agent.get(url).call().map(|resp| resp.status().as_u16() < 500).unwrap_or(false)
 }

@@ -117,6 +117,8 @@ pub struct Engine {
     event_tx: mpsc::Sender<Event>,
     event_rx: mpsc::Receiver<Event>,
     sys: sysinfo::System,
+    /// Reused across sample_resource_usage calls instead of allocating fresh each time.
+    children_scratch: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
     last_sample: Option<Instant>,
     revision: u64,
     /// Faux en tests : evite d'ecraser le fichier de config reel de l'utilisateur.
@@ -146,6 +148,7 @@ impl Engine {
             event_tx,
             event_rx,
             sys: sysinfo::System::new(),
+            children_scratch: HashMap::new(),
             last_sample: None,
             revision: 0,
             persist,
@@ -217,15 +220,18 @@ impl Engine {
         if roots.is_empty() {
             return;
         }
-        // Chaque commande lancee (npm/ng/cargo...) genere des sous-process (node,
-        // esbuild, webpack workers...) qui portent la vraie consommation memoire —
-        // le process racine suivi dans `handles` ne represente souvent que quelques
-        // Mo. Il faut donc rafraichir tous les process du systeme pour reconstruire
-        // l'arbre via `parent()`, puis sommer chaque sous-arbre plutot que de ne lire
-        // que le PID racine.
-        self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        // Need the whole process table to rebuild the parent/child tree via `parent()` —
+        // a tracked app's real memory usage lives in its subprocesses, not the root pid.
+        // Only cpu+memory requested; we don't read disk/exe/tasks, and parent() isn't
+        // gated by ProcessRefreshKind anyway.
+        self.sys.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::nothing().with_cpu().with_memory(),
+        );
 
-        let mut children: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
+        let mut children = std::mem::take(&mut self.children_scratch);
+        children.clear();
         for (pid, process) in self.sys.processes() {
             if let Some(parent) = process.parent() {
                 children.entry(parent).or_default().push(*pid);
@@ -264,6 +270,7 @@ impl Engine {
                 rt.memory_mb = mem;
             }
         }
+        self.children_scratch = children;
         if changed {
             self.revision += 1;
         }

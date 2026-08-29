@@ -26,6 +26,49 @@ fn status_css_class(view: &AppView) -> &'static str {
     }
 }
 
+/// Shared by build_row and update_row so both compute the subtitle the same way.
+fn row_subtitle(view: &AppView) -> String {
+    match (&view.error, view.active, view.healthy) {
+        (Some(err), _, _) => err.clone(),
+        (None, true, Some(true)) => format!(
+            "{} · ✓ healthy · {:.0}% CPU · {:.0} Mo",
+            view.status_label, view.cpu_percent, view.memory_mb
+        ),
+        (None, true, Some(false)) => format!(
+            "{} · ✗ ne répond pas · {:.0}% CPU · {:.0} Mo",
+            view.status_label, view.cpu_percent, view.memory_mb
+        ),
+        (None, true, None) => {
+            format!("{} · {:.0}% CPU · {:.0} Mo", view.status_label, view.cpu_percent, view.memory_mb)
+        }
+        (None, false, _) => view.status_label.to_string(),
+    }
+}
+
+fn kind_label_text(kind: AppKind) -> &'static str {
+    match kind {
+        AppKind::Cargo => "CARGO",
+        AppKind::Npm => "NPM",
+        AppKind::Dotnet => "DOTNET",
+        AppKind::Maven => "MAVEN",
+        AppKind::Python => "PYTHON",
+        AppKind::Go => "GO",
+        AppKind::Raw => "RAW",
+    }
+}
+
+/// Kept alive across refreshes so update_row can patch a row in place.
+struct RowWidgets {
+    row: adw::ActionRow,
+    dot: gtk::Box,
+    kind_label: gtk::Label,
+    open_btn: gtk::Button,
+    start_btn: gtk::Button,
+    stop_btn: gtk::Button,
+    /// Lets open_btn/edit_btn always use current data even though the row is reused.
+    current_view: Rc<RefCell<AppView>>,
+}
+
 fn load_styles() {
     let provider = gtk::CssProvider::new();
     provider.load_from_data(
@@ -79,6 +122,10 @@ struct Ui {
     /// Buffer de logs accumule cote client pour l'app selectionnee, mis a
     /// jour par append (delta) ou remplacement complet (`logs_replace`).
     selected_logs: Rc<RefCell<Vec<String>>>,
+    /// Widgets de chaque ligne, pour patcher en place plutot que rebuild a chaque tick.
+    row_widgets: Rc<RefCell<HashMap<Uuid, RowWidgets>>>,
+    /// Ordre des ids au dernier rebuild complet — sert a detecter si on peut patcher.
+    last_row_order: Rc<RefCell<Vec<Uuid>>>,
 }
 
 impl Ui {
@@ -88,35 +135,63 @@ impl Ui {
         let apps = self.engine.borrow_mut().list_apps(logs_for);
         self.notify_new_failures(&apps);
 
+        // Set when render_logs can patch the buffer incrementally instead of a full rebuild.
+        let mut incremental_append: Option<(usize, Vec<String>)> = None;
         if let Some(id) = selected {
             if let Some(view) = apps.iter().find(|a| a.id == id) {
                 if view.logs_replace {
                     *self.selected_logs.borrow_mut() = view.logs.clone();
                 } else if !view.logs.is_empty() {
                     let mut logs = self.selected_logs.borrow_mut();
+                    // Buffer still shows the placeholder if it was empty — needs a full render.
+                    let was_empty = logs.is_empty();
                     logs.extend(view.logs.iter().cloned());
                     let overflow = logs.len().saturating_sub(MAX_DISPLAYED_LOG_LINES);
                     if overflow > 0 {
                         logs.drain(0..overflow);
+                    }
+                    if !was_empty {
+                        let survive = view.logs.len().min(logs.len());
+                        let appended = logs[logs.len() - survive..].to_vec();
+                        incremental_append = Some((overflow, appended));
                     }
                 }
                 self.since_seq.set(view.logs_base_seq + view.logs.len() as u64);
             }
         }
 
-        while let Some(child) = self.list_box.first_child() {
-            self.list_box.remove(&child);
-        }
-
         let selected = *self.selected.borrow();
         let mut selected_view: Option<AppView> = None;
-
         for view in &apps {
             if Some(view.id) == selected {
                 selected_view = Some(view.clone());
             }
-            let row = self.build_row(view);
-            self.list_box.append(&row);
+        }
+
+        let current_order: Vec<Uuid> = apps.iter().map(|v| v.id).collect();
+        let order_unchanged = *self.last_row_order.borrow() == current_order;
+
+        if order_unchanged && !self.row_widgets.borrow().is_empty() {
+            // Same apps, same order — patch rows in place instead of rebuilding.
+            let widgets = self.row_widgets.borrow();
+            for view in &apps {
+                if let Some(w) = widgets.get(&view.id) {
+                    self.update_row(w, view);
+                }
+            }
+        } else {
+            while let Some(child) = self.list_box.first_child() {
+                self.list_box.remove(&child);
+            }
+            let mut widgets = self.row_widgets.borrow_mut();
+            widgets.clear();
+            for view in &apps {
+                let (widget, row_widgets) = self.build_row(view);
+                self.list_box.append(&widget);
+                widgets.insert(view.id, row_widgets);
+            }
+            drop(widgets);
+            *self.last_row_order.borrow_mut() = current_order;
         }
 
         if selected_view.is_none() {
@@ -136,7 +211,7 @@ impl Ui {
 
         if let Some(view) = selected_view {
             self.header_label.set_subtitle(&view.name);
-            self.render_logs(&view);
+            self.render_logs(&view, incremental_append);
         } else {
             self.header_label.set_subtitle("Aucune app configurée");
             self.log_view.buffer().set_text("");
@@ -153,10 +228,29 @@ impl Ui {
         }
     }
 
-    fn render_logs(&self, view: &AppView) {
+    fn render_logs(&self, view: &AppView, incremental: Option<(usize, Vec<String>)>) {
         let _ = view; // no longer used for log content, kept for call-site symmetry
         let filter = self.search_entry.text().to_string().to_lowercase();
         let buffer = self.log_view.buffer();
+
+        if filter.is_empty() {
+            if let Some((trimmed, new_lines)) = incremental {
+                if !new_lines.is_empty() {
+                    // Delete the trimmed lines, insert the new ones — avoids a full set_text.
+                    if trimmed > 0 {
+                        if let Some(mut cut) = buffer.iter_at_line(trimmed as i32) {
+                            buffer.delete(&mut buffer.start_iter(), &mut cut);
+                        }
+                    }
+                    let chunk = format!("\n{}", new_lines.join("\n"));
+                    buffer.insert(&mut buffer.end_iter(), &chunk);
+                    let mut end = buffer.end_iter();
+                    self.log_view.scroll_to_iter(&mut end, 0.0, false, 0.0, 0.0);
+                    return;
+                }
+            }
+        }
+
         let logs = self.selected_logs.borrow();
         if logs.is_empty() {
             buffer.set_text("Pas encore de logs. Démarre l'app pour voir sa sortie ici.");
@@ -165,7 +259,12 @@ impl Ui {
         let text = if filter.is_empty() {
             logs.join("\n")
         } else {
-            logs.iter().filter(|l| l.to_lowercase().contains(&filter)).cloned().collect::<Vec<_>>().join("\n")
+            // Collect refs, not clones — join() just needs to read them.
+            logs.iter()
+                .filter(|l| l.to_lowercase().contains(&filter))
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
         };
         drop(logs);
         buffer.set_text(&text);
@@ -188,62 +287,43 @@ impl Ui {
         }
     }
 
-    fn build_row(&self, view: &AppView) -> gtk::Widget {
-        let subtitle = match (&view.error, view.active, view.healthy) {
-            (Some(err), _, _) => err.clone(),
-            (None, true, Some(true)) => format!(
-                "{} · ✓ healthy · {:.0}% CPU · {:.0} Mo",
-                view.status_label, view.cpu_percent, view.memory_mb
-            ),
-            (None, true, Some(false)) => format!(
-                "{} · ✗ ne répond pas · {:.0}% CPU · {:.0} Mo",
-                view.status_label, view.cpu_percent, view.memory_mb
-            ),
-            (None, true, None) => format!(
-                "{} · {:.0}% CPU · {:.0} Mo",
-                view.status_label, view.cpu_percent, view.memory_mb
-            ),
-            (None, false, _) => view.status_label.to_string(),
-        };
+    fn build_row(&self, view: &AppView) -> (gtk::Widget, RowWidgets) {
+        let current_view = Rc::new(RefCell::new(view.clone()));
 
         let row = adw::ActionRow::builder()
             .title(&view.name)
-            .subtitle(&subtitle)
+            .subtitle(row_subtitle(view))
             .activatable(true)
             .build();
 
         let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        dot.add_css_class("status-dot");
-        dot.add_css_class(status_css_class(view));
+        dot.set_css_classes(&["status-dot", status_css_class(view)]);
         dot.set_valign(gtk::Align::Center);
         dot.set_halign(gtk::Align::Center);
         dot.set_vexpand(false);
         dot.set_size_request(10, 10);
         row.add_prefix(&dot);
 
-        let kind_label = gtk::Label::new(Some(match view.kind {
-            AppKind::Cargo => "CARGO",
-            AppKind::Npm => "NPM",
-            AppKind::Dotnet => "DOTNET",
-            AppKind::Maven => "MAVEN",
-            AppKind::Python => "PYTHON",
-            AppKind::Go => "GO",
-            AppKind::Raw => "RAW",
-        }));
+        let kind_label = gtk::Label::new(Some(kind_label_text(view.kind)));
         kind_label.add_css_class("dim-label");
         kind_label.add_css_class("caption");
         row.add_suffix(&kind_label);
 
-        if let Some(url) = view.url.clone() {
-            let open_btn = gtk::Button::from_icon_name("web-browser-symbolic");
-            open_btn.set_valign(gtk::Align::Center);
-            open_btn.add_css_class("flat");
-            open_btn.set_tooltip_text(Some("Ouvrir dans le navigateur"));
+        // Always created; visibility toggled in update_row instead of add/remove per refresh.
+        let open_btn = gtk::Button::from_icon_name("web-browser-symbolic");
+        open_btn.set_valign(gtk::Align::Center);
+        open_btn.add_css_class("flat");
+        open_btn.set_tooltip_text(Some("Ouvrir dans le navigateur"));
+        open_btn.set_visible(view.url.is_some());
+        {
+            let current_view = current_view.clone();
             open_btn.connect_clicked(move |_| {
-                let _ = gio::AppInfo::launch_default_for_uri(&url, None::<&gio::AppLaunchContext>);
+                if let Some(url) = current_view.borrow().url.clone() {
+                    let _ = gio::AppInfo::launch_default_for_uri(&url, None::<&gio::AppLaunchContext>);
+                }
             });
-            row.add_suffix(&open_btn);
         }
+        row.add_suffix(&open_btn);
 
         let edit_btn = gtk::Button::from_icon_name("document-edit-symbolic");
         edit_btn.set_valign(gtk::Align::Center);
@@ -295,12 +375,14 @@ impl Ui {
             let engine = self.engine.clone();
             let this_weak = self.weak_refresh();
             let row_for_window = row.clone();
-            let view = view.clone();
+            let current_view = current_view.clone();
             edit_btn.connect_clicked(move |_| {
                 let Some(window) = row_for_window.root().and_then(|r| r.downcast::<gtk::Window>().ok()) else { return };
                 let engine = engine.clone();
                 let this_weak = this_weak.clone();
-                add_dialog::show_app_dialog(&window, Some(&view), move |draft| {
+                // Read current data, not the stale snapshot from when this row was built.
+                let view_snapshot = current_view.borrow().clone();
+                add_dialog::show_app_dialog(&window, Some(&view_snapshot), move |draft| {
                     engine.borrow_mut().update_app(id, draft);
                     this_weak();
                 });
@@ -325,7 +407,28 @@ impl Ui {
             });
         }
 
-        row.upcast()
+        let widgets = RowWidgets {
+            row: row.clone(),
+            dot,
+            kind_label,
+            open_btn,
+            start_btn,
+            stop_btn,
+            current_view,
+        };
+        (row.upcast(), widgets)
+    }
+
+    /// Must stay in sync with the mutable fields build_row sets.
+    fn update_row(&self, w: &RowWidgets, view: &AppView) {
+        *w.current_view.borrow_mut() = view.clone();
+        w.row.set_title(&view.name);
+        w.row.set_subtitle(&row_subtitle(view));
+        w.dot.set_css_classes(&["status-dot", status_css_class(view)]);
+        w.kind_label.set_label(kind_label_text(view.kind));
+        w.open_btn.set_visible(view.url.is_some());
+        w.start_btn.set_sensitive(!view.active);
+        w.stop_btn.set_sensitive(view.active);
     }
 
     /// Petit helper pour rappeler `refresh()` depuis une closure de callback GTK
@@ -342,6 +445,8 @@ impl Ui {
         let last_seen_revision = self.last_seen_revision.clone();
         let since_seq = self.since_seq.clone();
         let selected_logs = self.selected_logs.clone();
+        let row_widgets = self.row_widgets.clone();
+        let last_row_order = self.last_row_order.clone();
         move || {
             let ui = Ui {
                 app: app.clone(),
@@ -355,6 +460,8 @@ impl Ui {
                 last_seen_revision: last_seen_revision.clone(),
                 since_seq: since_seq.clone(),
                 selected_logs: selected_logs.clone(),
+                row_widgets: row_widgets.clone(),
+                last_row_order: last_row_order.clone(),
             };
             ui.refresh_now();
         }
@@ -463,6 +570,8 @@ fn build_ui(app: &adw::Application) {
         last_seen_revision: Rc::new(Cell::new(0)),
         since_seq: Rc::new(Cell::new(0)),
         selected_logs: Rc::new(RefCell::new(Vec::new())),
+        row_widgets: Rc::new(RefCell::new(HashMap::new())),
+        last_row_order: Rc::new(RefCell::new(Vec::new())),
     });
 
     {
@@ -603,11 +712,10 @@ fn build_ui(app: &adw::Application) {
 
     ui.refresh_now();
 
-    // Poll periodique : les logs/statuts arrivent depuis des threads de process en
-    // arriere-plan, on les fait passer dans la boucle GTK via un timeout.
+    // Poll periodique, meme intervalle que macOS/Windows.
     {
         let ui = ui.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
+        glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
             ui.refresh();
             glib::ControlFlow::Continue
         });

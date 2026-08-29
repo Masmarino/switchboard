@@ -12,7 +12,7 @@ final class AppState {
     private var lastStatus: [String: String] = [:]
     private var lastSeenRevision: UInt64 = 0
     private var sinceSeq: UInt64 = 0
-    var selectedLogs: [String] = []
+    var selectedLogs: [LogLine] = []
     /// Mirrors the Rust engine's own MAX_LOG_LINES cap — without this, a client that stays
     /// caught up with the server never hits the "replace" fallback that would otherwise
     /// reset this array, so it grows unbounded for the lifetime of the process.
@@ -36,11 +36,11 @@ final class AppState {
         apps.first { $0.id == selectedID } ?? apps.first
     }
 
-    var filteredLogs: [String] {
+    var filteredLogs: [LogLine] {
         guard selected != nil else { return [] }
         guard !logFilter.isEmpty else { return selectedLogs }
         let needle = logFilter.lowercased()
-        return selectedLogs.filter { $0.lowercased().contains(needle) }
+        return selectedLogs.filter { $0.text.lowercased().contains(needle) }
     }
 
     func start() {
@@ -66,9 +66,9 @@ final class AppState {
         let fetched = engine.listApps(selectedID: selectedID, sinceSeq: sinceSeq)
         if let id = selectedID, let selectedEntry = fetched.first(where: { $0.id == id }) {
             if selectedEntry.logsReplace {
-                selectedLogs = selectedEntry.logs
+                selectedLogs = makeLogLines(selectedEntry.logs, baseSeq: selectedEntry.logsBaseSeq)
             } else if !selectedEntry.logs.isEmpty {
-                selectedLogs.append(contentsOf: selectedEntry.logs)
+                selectedLogs.append(contentsOf: makeLogLines(selectedEntry.logs, baseSeq: selectedEntry.logsBaseSeq))
                 if selectedLogs.count > Self.maxDisplayedLogLines {
                     selectedLogs.removeFirst(selectedLogs.count - Self.maxDisplayedLogLines)
                 }
@@ -151,6 +151,15 @@ final class AppState {
         selectedLogs = []
         sinceSeq = 0
         refresh(force: true)
+    }
+
+    /// logsBaseSeq is the engine's own globally increasing sequence number for the
+    /// first line in this batch, so it's already a stable id base — no need to track
+    /// one separately on the client.
+    private func makeLogLines(_ texts: [String], baseSeq: UInt64) -> [LogLine] {
+        texts.enumerated().map { offset, text in
+            LogLine(id: Int(baseSeq) + offset, text: text)
+        }
     }
 
     @discardableResult

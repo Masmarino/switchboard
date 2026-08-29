@@ -1,4 +1,3 @@
-using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using Microsoft.UI;
@@ -9,6 +8,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using Microsoft.Windows.AppNotifications;
 using Windows.UI;
+using Windows.UI.Text;
 using Switchboard.Engine;
 using Switchboard.Models;
 using WinForms = System.Windows.Forms;
@@ -42,6 +42,20 @@ public sealed partial class MainWindow : Window
     /// reset _selectedLogs, so it grows unbounded for the lifetime of the process.
     private const int MaxDisplayedLogLines = 5000;
     private string _logFilter = "";
+    /// Row widgets by app id, kept alive so RefreshNow can patch rows in place.
+    private readonly Dictionary<string, RowWidgets> _rowWidgets = [];
+    /// App id order from the last full rebuild, to detect if we can patch instead.
+    private List<string> _lastRowOrder = [];
+    /// Skips RebuildTrayMenu's work when nothing it shows has actually changed.
+    private List<(string Id, bool Active, string StatusLabel, string Name)> _lastTrayMenuState = [];
+    /// Whether LogEditBox currently holds real log content (vs. the placeholder
+    /// text) — RenderLogs is the only place that reads or writes this.
+    private bool _logHasContent;
+    /// Character length of each currently-rendered line, in order — lets RenderLogs
+    /// delete an exact trimmed prefix instead of falling back to a full rebuild.
+    /// Only meaningful when _logRenderedUnfiltered is true.
+    private readonly List<int> _renderedLineLengths = [];
+    private bool _logRenderedUnfiltered;
 
     public MainWindow()
     {
@@ -89,6 +103,12 @@ public sealed partial class MainWindow : Window
     private void RebuildTrayMenu()
     {
         if (_trayIcon is null) return;
+        var state = _apps.Select(a => (a.Id, a.Active, a.StatusLabel, a.Name)).ToList();
+        if (state.SequenceEqual(_lastTrayMenuState))
+        {
+            return;
+        }
+        _lastTrayMenuState = state;
         var menu = new WinForms.ContextMenuStrip();
         foreach (var app in _apps)
         {
@@ -116,6 +136,9 @@ public sealed partial class MainWindow : Window
 
     private void RefreshNow()
     {
+        // Set when RenderLogs can append without a full rebuild.
+        (int Trimmed, List<string> NewLines)? incrementalAppend = null;
+
         _apps = _engine.ListApps(_selectedId, _sinceSeq);
         if (_selectedId is { } id)
         {
@@ -129,11 +152,17 @@ public sealed partial class MainWindow : Window
                 }
                 else if (view.Logs.Count > 0)
                 {
+                    // If we were empty, LogEditBox still shows the placeholder — needs a full render.
+                    var wasEmpty = _selectedLogs.Count == 0;
                     _selectedLogs.AddRange(view.Logs);
                     var overflow = _selectedLogs.Count - MaxDisplayedLogLines;
                     if (overflow > 0)
                     {
                         _selectedLogs.RemoveRange(0, overflow);
+                    }
+                    if (!wasEmpty)
+                    {
+                        incrementalAppend = (Math.Max(overflow, 0), view.Logs);
                     }
                 }
                 _sinceSeq = view.LogsBaseSeq + (ulong)view.Logs.Count;
@@ -157,10 +186,31 @@ public sealed partial class MainWindow : Window
             }
         }
 
-        AppListView.Items.Clear();
-        foreach (var app in _apps)
+        var currentOrder = _apps.Select(a => a.Id).ToList();
+        var orderUnchanged = _lastRowOrder.SequenceEqual(currentOrder);
+
+        if (orderUnchanged && _rowWidgets.Count > 0)
         {
-            AppListView.Items.Add(BuildRow(app));
+            // Same apps, same order — patch rows in place instead of rebuilding.
+            foreach (var app in _apps)
+            {
+                if (_rowWidgets.TryGetValue(app.Id, out var w))
+                {
+                    UpdateRow(w, app);
+                }
+            }
+        }
+        else
+        {
+            AppListView.Items.Clear();
+            _rowWidgets.Clear();
+            foreach (var app in _apps)
+            {
+                var w = BuildRow(app);
+                AppListView.Items.Add(w.Container);
+                _rowWidgets[app.Id] = w;
+            }
+            _lastRowOrder = currentOrder;
         }
 
         var selected = _apps.FirstOrDefault(a => a.Id == _selectedId);
@@ -168,13 +218,14 @@ public sealed partial class MainWindow : Window
         {
             DetailTitle.Text = "Switchboard";
             DetailSubtitle.Text = "Aucune app configurée";
-            LogText.Text = "";
+            LogEditBox.Document.SetText(TextSetOptions.None, "");
+            _logHasContent = false;
             return;
         }
 
         DetailTitle.Text = selected.Name;
         DetailSubtitle.Text = selected.Subtitle;
-        RenderLogs();
+        RenderLogs(incrementalAppend);
     }
 
     /// <summary>
@@ -191,19 +242,54 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void RenderLogs()
+    private void RenderLogs((int Trimmed, List<string> NewLines)? incremental)
     {
-        if (_selectedLogs.Count == 0)
+        var filterActive = !string.IsNullOrEmpty(_logFilter);
+        var document = LogEditBox.Document;
+
+        // Take the incremental path whenever the last render was the full, unfiltered
+        // log — we then know exactly which lines are still on screen (_renderedLineLengths)
+        // and can delete a trimmed prefix by its exact character length instead of
+        // relying on ITextRange's paragraph counting.
+        if (!filterActive && _logRenderedUnfiltered && incremental is { } inc && inc.NewLines.Count > 0
+            && inc.Trimmed <= _renderedLineLengths.Count)
         {
-            LogText.Text = "Pas encore de logs. Démarre l'app pour voir sa sortie ici.";
+            if (inc.Trimmed > 0)
+            {
+                var dropLength = _renderedLineLengths.Take(inc.Trimmed).Sum(l => l + 1);
+                document.GetRange(0, dropLength).SetText(TextSetOptions.None, "");
+                _renderedLineLengths.RemoveRange(0, inc.Trimmed);
+            }
+            var end = document.GetRange(int.MaxValue, int.MaxValue);
+            end.SetText(TextSetOptions.None, "\n" + string.Join("\n", inc.NewLines));
+            end.Collapse(false);
+            document.Selection.SetRange(end.StartPosition, end.StartPosition);
+            document.Selection.ScrollIntoView(PointOptions.None);
+            _renderedLineLengths.AddRange(inc.NewLines.Select(l => l.Length));
             return;
         }
-        var lines = string.IsNullOrEmpty(_logFilter)
-            ? _selectedLogs
-            : _selectedLogs.Where(l => l.Contains(_logFilter, StringComparison.OrdinalIgnoreCase)).ToList();
-        LogText.Text = string.Join("\n", lines);
-        LogScroller.UpdateLayout();
-        LogScroller.ChangeView(null, LogScroller.ScrollableHeight, null, true);
+
+        if (_selectedLogs.Count == 0)
+        {
+            document.SetText(TextSetOptions.None, "Pas encore de logs. Démarre l'app pour voir sa sortie ici.");
+            _logHasContent = false;
+            _logRenderedUnfiltered = false;
+            _renderedLineLengths.Clear();
+            return;
+        }
+        var matching = filterActive
+            ? _selectedLogs.Where(l => l.Contains(_logFilter, StringComparison.OrdinalIgnoreCase)).ToList()
+            : _selectedLogs;
+        document.SetText(TextSetOptions.None, string.Join("\n", matching));
+        _logHasContent = true;
+        _logRenderedUnfiltered = !filterActive;
+        _renderedLineLengths.Clear();
+        if (!filterActive)
+        {
+            _renderedLineLengths.AddRange(matching.Select(l => l.Length));
+        }
+        document.Selection.SetRange(int.MaxValue, int.MaxValue);
+        document.Selection.ScrollIntoView(PointOptions.None);
     }
 
     private void NotifyNewFailures()
@@ -236,26 +322,54 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private FrameworkElement BuildRow(AppEntry app)
+    /// CurrentApp backs the open/edit closures so they use current data on a reused row.
+    private sealed class RowWidgets
     {
-        var color = app.StatusLabel switch
-        {
-            "running" => Color.FromArgb(255, 48, 209, 88),
-            "building" => Color.FromArgb(255, 255, 159, 10),
-            "failed" => Color.FromArgb(255, 255, 69, 58),
-            _ => Color.FromArgb(255, 142, 142, 147),
-        };
+        public required FrameworkElement Container;
+        public required Ellipse Dot;
+        public required TextBlock NameText;
+        public required TextBlock KindText;
+        public required TextBlock StatusText;
+        public required Button OpenBtn;
+        public required Button StartBtn;
+        public required Button StopBtn;
+        public required AppEntry CurrentApp;
+    }
 
-        var dot = new Ellipse { Width = 9, Height = 9, Fill = new SolidColorBrush(color), Margin = new Thickness(0, 0, 8, 0) };
+    // Cached brushes — no reason to allocate a new one per row on every refresh.
+    private static readonly SolidColorBrush RunningBrush = new(Color.FromArgb(255, 48, 209, 88));
+    private static readonly SolidColorBrush BuildingBrush = new(Color.FromArgb(255, 255, 159, 10));
+    private static readonly SolidColorBrush FailedBrush = new(Color.FromArgb(255, 255, 69, 58));
+    private static readonly SolidColorBrush StoppedBrush = new(Color.FromArgb(255, 142, 142, 147));
+    private static readonly SolidColorBrush ErrorTextBrush = new(Colors.OrangeRed);
+    private static readonly SolidColorBrush NormalTextBrush = new(Colors.Gray);
+
+    private static SolidColorBrush StatusDotBrush(string statusLabel) => statusLabel switch
+    {
+        "running" => RunningBrush,
+        "building" => BuildingBrush,
+        "failed" => FailedBrush,
+        _ => StoppedBrush,
+    };
+
+    // Shared by BuildRow and UpdateRow so the two can't drift apart on what a row shows.
+    private static string StatusTextFor(AppEntry app) => app.Error ?? app.Subtitle;
+    private static SolidColorBrush StatusTextBrushFor(AppEntry app) => app.Error is not null ? ErrorTextBrush : NormalTextBrush;
+    private static Visibility OpenButtonVisibilityFor(AppEntry app) => string.IsNullOrWhiteSpace(app.Url) ? Visibility.Collapsed : Visibility.Visible;
+
+    private RowWidgets BuildRow(AppEntry app)
+    {
+        var dot = new Ellipse { Width = 9, Height = 9, Fill = StatusDotBrush(app.StatusLabel), Margin = new Thickness(0, 0, 8, 0) };
 
         var nameText = new TextBlock { Text = app.Name, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, FontSize = 14 };
+        var kindText = new TextBlock { Text = app.Kind.Label(), FontSize = 10, FontFamily = new FontFamily("Consolas") };
         var kindBadge = new Border
         {
             Background = new SolidColorBrush(Colors.Gray) { Opacity = 0.15 },
             CornerRadius = new CornerRadius(5),
             Padding = new Thickness(6, 1, 6, 1),
             Margin = new Thickness(8, 0, 0, 0),
-            Child = new TextBlock { Text = app.Kind.Label(), FontSize = 10, FontFamily = new FontFamily("Consolas") },
+            Child = kindText,
         };
 
         var topRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
@@ -265,39 +379,46 @@ public sealed partial class MainWindow : Window
 
         var statusText = new TextBlock
         {
-            Text = app.Error ?? app.Subtitle,
+            Text = StatusTextFor(app),
             FontSize = 11,
             FontFamily = new FontFamily("Consolas"),
-            Foreground = new SolidColorBrush(app.Error is not null ? Colors.OrangeRed : Colors.Gray),
+            Foreground = StatusTextBrushFor(app),
             TextWrapping = TextWrapping.Wrap,
         };
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
 
-        if (!string.IsNullOrWhiteSpace(app.Url))
+        // Assigned below once every widget exists — the closures capture `w` itself
+        // (not `app`), so they always read CurrentApp's latest value even after
+        // UpdateRow patches a reused row.
+        RowWidgets w = null!;
+
+        var openBtn = new Button { Content = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), Margin = new Thickness(0, 0, 4, 0) };
+        openBtn.Visibility = OpenButtonVisibilityFor(app);
+        openBtn.Click += async (_, _) =>
         {
-            var openBtn = new Button { Content = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), Margin = new Thickness(0, 0, 4, 0) };
-            openBtn.Click += async (_, _) =>
+            if (!string.IsNullOrWhiteSpace(w.CurrentApp.Url))
             {
-                await Windows.System.Launcher.LaunchUriAsync(new Uri(app.Url!));
-            };
-            actions.Children.Add(openBtn);
-        }
+                await Windows.System.Launcher.LaunchUriAsync(new Uri(w.CurrentApp.Url!));
+            }
+        };
+        actions.Children.Add(openBtn);
 
         var editBtn = new Button { Content = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), Margin = new Thickness(0, 0, 4, 0) };
-        editBtn.Click += (_, _) => ShowAppDialog(app);
+        editBtn.Click += (_, _) => ShowAppDialog(w.CurrentApp);
         actions.Children.Add(editBtn);
 
+        var id = app.Id;
         var startBtn = new Button { Content = "▶", IsEnabled = !app.Active, Margin = new Thickness(0, 0, 4, 0) };
-        startBtn.Click += (_, _) => { _engine.StartApp(app.Id); _selectedId = app.Id; _sinceSeq = 0; _selectedLogs.Clear(); RefreshNow(); };
+        startBtn.Click += (_, _) => { _engine.StartApp(id); _selectedId = id; _sinceSeq = 0; _selectedLogs.Clear(); RefreshNow(); };
         actions.Children.Add(startBtn);
 
         var stopBtn = new Button { Content = "■", IsEnabled = app.Active, Margin = new Thickness(0, 0, 4, 0) };
-        stopBtn.Click += (_, _) => { _engine.StopApp(app.Id); RefreshNow(); };
+        stopBtn.Click += (_, _) => { _engine.StopApp(id); RefreshNow(); };
         actions.Children.Add(stopBtn);
 
         var deleteBtn = new Button { Content = "🗑" };
-        deleteBtn.Click += (_, _) => { _engine.RemoveApp(app.Id); if (_selectedId == app.Id) _selectedId = null; RefreshNow(); };
+        deleteBtn.Click += (_, _) => { _engine.RemoveApp(id); if (_selectedId == id) _selectedId = null; RefreshNow(); };
         actions.Children.Add(deleteBtn);
 
         var bottomRow = new Grid();
@@ -311,7 +432,34 @@ public sealed partial class MainWindow : Window
         var container = new StackPanel { Spacing = 4, Margin = new Thickness(8, 6, 8, 6), Tag = app.Id };
         container.Children.Add(topRow);
         container.Children.Add(bottomRow);
-        return container;
+
+        w = new RowWidgets
+        {
+            Container = container,
+            Dot = dot,
+            NameText = nameText,
+            KindText = kindText,
+            StatusText = statusText,
+            OpenBtn = openBtn,
+            StartBtn = startBtn,
+            StopBtn = stopBtn,
+            CurrentApp = app,
+        };
+        return w;
+    }
+
+    /// Must stay in sync with the mutable fields BuildRow sets.
+    private void UpdateRow(RowWidgets w, AppEntry app)
+    {
+        w.CurrentApp = app;
+        w.Dot.Fill = StatusDotBrush(app.StatusLabel);
+        w.NameText.Text = app.Name;
+        w.KindText.Text = app.Kind.Label();
+        w.StatusText.Text = StatusTextFor(app);
+        w.StatusText.Foreground = StatusTextBrushFor(app);
+        w.OpenBtn.Visibility = OpenButtonVisibilityFor(app);
+        w.StartBtn.IsEnabled = !app.Active;
+        w.StopBtn.IsEnabled = app.Active;
     }
 
     private void OnAppSelectionChanged(object sender, SelectionChangedEventArgs e)
