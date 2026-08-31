@@ -8,7 +8,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using Microsoft.Windows.AppNotifications;
 using Windows.UI;
-using Windows.UI.Text;
+using Microsoft.UI.Text;
 using Switchboard.Engine;
 using Switchboard.Models;
 using WinForms = System.Windows.Forms;
@@ -48,9 +48,6 @@ public sealed partial class MainWindow : Window
     private List<string> _lastRowOrder = [];
     /// Skips RebuildTrayMenu's work when nothing it shows has actually changed.
     private List<(string Id, bool Active, string StatusLabel, string Name)> _lastTrayMenuState = [];
-    /// Whether LogEditBox currently holds real log content (vs. the placeholder
-    /// text) — RenderLogs is the only place that reads or writes this.
-    private bool _logHasContent;
     /// Character length of each currently-rendered line, in order — lets RenderLogs
     /// delete an exact trimmed prefix instead of falling back to a full rebuild.
     /// Only meaningful when _logRenderedUnfiltered is true.
@@ -219,7 +216,8 @@ public sealed partial class MainWindow : Window
             DetailTitle.Text = "Switchboard";
             DetailSubtitle.Text = "Aucune app configurée";
             LogEditBox.Document.SetText(TextSetOptions.None, "");
-            _logHasContent = false;
+            _logRenderedUnfiltered = false;
+            _renderedLineLengths.Clear();
             return;
         }
 
@@ -272,7 +270,6 @@ public sealed partial class MainWindow : Window
         if (_selectedLogs.Count == 0)
         {
             document.SetText(TextSetOptions.None, "Pas encore de logs. Démarre l'app pour voir sa sortie ici.");
-            _logHasContent = false;
             _logRenderedUnfiltered = false;
             _renderedLineLengths.Clear();
             return;
@@ -281,7 +278,6 @@ public sealed partial class MainWindow : Window
             ? _selectedLogs.Where(l => l.Contains(_logFilter, StringComparison.OrdinalIgnoreCase)).ToList()
             : _selectedLogs;
         document.SetText(TextSetOptions.None, string.Join("\n", matching));
-        _logHasContent = true;
         _logRenderedUnfiltered = !filterActive;
         _renderedLineLengths.Clear();
         if (!filterActive)
