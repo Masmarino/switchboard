@@ -3,10 +3,9 @@ use gtk::glib;
 use switchboard_core::AppView;
 use uuid::Uuid;
 
-/// Fenetre de selection avant export : une case a cocher par app (toutes cochees
-/// par defaut) + un toggle "inclure les variables d'environnement", puis panneau
-/// de sauvegarde natif. Mirrors `add_dialog`'s adw::Window + PreferencesGroup
-/// pattern.
+use crate::dialog_shell::dialog_shell;
+
+/// Case a cocher par app (toutes par defaut) + toggle env vars, puis panneau de sauvegarde natif.
 pub fn show_export_dialog(
     parent: &impl IsA<gtk::Window>,
     apps: &[AppView],
@@ -33,30 +32,8 @@ pub fn show_export_dialog(
     page.add(&apps_group);
     page.add(&options_group);
 
-    let dialog = adw::Window::builder()
-        .transient_for(parent)
-        .modal(true)
-        .title("Exporter la config")
-        .default_width(420)
-        .default_height(480)
-        .build();
+    let (dialog, export_btn) = dialog_shell(parent, "Exporter la config", None, "Exporter…", (420, 480), &page);
 
-    let export_btn = gtk::Button::with_label("Exporter…");
-    export_btn.add_css_class("suggested-action");
-    let cancel_btn = gtk::Button::with_label("Annuler");
-    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
-    header.pack_end(&export_btn);
-    header.pack_start(&cancel_btn);
-
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&header);
-    content.append(&page);
-    dialog.set_content(Some(&content));
-
-    {
-        let dialog = dialog.clone();
-        cancel_btn.connect_clicked(move |_| dialog.close());
-    }
     {
         let dialog = dialog.clone();
         export_btn.connect_clicked(move |_| {

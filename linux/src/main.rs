@@ -1,10 +1,11 @@
 mod about_dialog;
 mod add_dialog;
 mod config_export_dialog;
+mod dialog_shell;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use switchboard_core::{AppKind, AppView, Engine};
@@ -12,9 +13,7 @@ use gtk::{gdk, gio, glib};
 use uuid::Uuid;
 
 const APP_ID: &str = "com.skolln.switchboard";
-/// Mirrors the Rust engine's own MAX_LOG_LINES cap — without this, a client that stays
-/// caught up with the server never hits the "replace" fallback that would otherwise
-/// reset `selected_logs`, so it grows unbounded for the lifetime of the process.
+/// Mirrors the Rust engine's MAX_LOG_LINES cap so a caught-up client's buffer can't grow unbounded.
 const MAX_DISPLAYED_LOG_LINES: usize = 5000;
 
 fn status_css_class(view: &AppView) -> &'static str {
@@ -45,16 +44,8 @@ fn row_subtitle(view: &AppView) -> String {
     }
 }
 
-fn kind_label_text(kind: AppKind) -> &'static str {
-    match kind {
-        AppKind::Cargo => "CARGO",
-        AppKind::Npm => "NPM",
-        AppKind::Dotnet => "DOTNET",
-        AppKind::Maven => "MAVEN",
-        AppKind::Python => "PYTHON",
-        AppKind::Go => "GO",
-        AppKind::Raw => "RAW",
-    }
+fn kind_label_text(kind: AppKind) -> String {
+    kind.display_name().to_uppercase()
 }
 
 /// Kept alive across refreshes so update_row can patch a row in place.
@@ -88,7 +79,6 @@ fn load_styles() {
     );
 }
 
-/// Boite de message simple (bouton OK) pour signaler un import invalide ou vide.
 fn show_message(parent: &impl IsA<gtk::Window>, text: &str, secondary: &str) {
     let dialog = gtk::MessageDialog::builder()
         .transient_for(parent)
@@ -110,22 +100,21 @@ struct Ui {
     search_entry: gtk::SearchEntry,
     header_label: adw::WindowTitle,
     selected: Rc<RefCell<Option<Uuid>>>,
-    /// Dernier statut connu par app, pour detecter les transitions vers "failed"
-    /// et declencher une notification — pas pour l'affichage (qui relit `list_apps`).
+    /// Dernier statut connu par app, pour detecter les transitions vers "failed".
     last_status: Rc<RefCell<HashMap<Uuid, &'static str>>>,
-    /// Derniere revision moteur vue par le poll — permet au timeout de sauter
-    /// un refresh complet quand rien n'a change depuis le dernier tick.
+    /// Derniere revision vue par le poll — saute le refresh complet si rien n'a change.
     last_seen_revision: Rc<Cell<u64>>,
-    /// Numero de sequence du dernier log connu par le client pour l'app
-    /// selectionnee ; envoye au moteur pour ne recevoir que le delta.
+    /// Sequence du dernier log connu pour l'app selectionnee, envoyee au moteur pour le delta.
     since_seq: Rc<Cell<u64>>,
-    /// Buffer de logs accumule cote client pour l'app selectionnee, mis a
-    /// jour par append (delta) ou remplacement complet (`logs_replace`).
+    /// Logs accumules cote client pour l'app selectionnee (append ou remplacement complet).
     selected_logs: Rc<RefCell<Vec<String>>>,
     /// Widgets de chaque ligne, pour patcher en place plutot que rebuild a chaque tick.
     row_widgets: Rc<RefCell<HashMap<Uuid, RowWidgets>>>,
     /// Ordre des ids au dernier rebuild complet — sert a detecter si on peut patcher.
     last_row_order: Rc<RefCell<Vec<Uuid>>>,
+    /// Vers soi-meme, pour que weak_refresh puisse rappeler refresh_now sans dupliquer
+    /// tous les champs — pose juste apres le Rc::new dans build_ui.
+    self_weak: RefCell<Weak<Ui>>,
 }
 
 impl Ui {
@@ -160,7 +149,6 @@ impl Ui {
             }
         }
 
-        let selected = *self.selected.borrow();
         let mut selected_view: Option<AppView> = None;
         for view in &apps {
             if Some(view.id) == selected {
@@ -172,7 +160,6 @@ impl Ui {
         let order_unchanged = *self.last_row_order.borrow() == current_order;
 
         if order_unchanged && !self.row_widgets.borrow().is_empty() {
-            // Same apps, same order — patch rows in place instead of rebuilding.
             let widgets = self.row_widgets.borrow();
             for view in &apps {
                 if let Some(w) = widgets.get(&view.id) {
@@ -196,12 +183,8 @@ impl Ui {
 
         if selected_view.is_none() {
             if let Some(first) = apps.first() {
-                // Fell back to a different app than the one `logs_for` targeted
-                // above (e.g. the previously-selected app was just removed) —
-                // its log-tracking state must reset, or a stale `since_seq` from
-                // the old selection would be diffed against the new app's own
-                // sequence numbers on the *next* refresh and silently show a
-                // truncated or empty log view.
+                // Fresh fallback selection: reset log state, or a stale since_seq from
+                // the old app corrupts the new app's log diff on the next refresh.
                 *self.selected.borrow_mut() = Some(first.id);
                 self.since_seq.set(0);
                 self.selected_logs.borrow_mut().clear();
@@ -211,15 +194,13 @@ impl Ui {
 
         if let Some(view) = selected_view {
             self.header_label.set_subtitle(&view.name);
-            self.render_logs(&view, incremental_append);
+            self.render_logs(incremental_append);
         } else {
             self.header_label.set_subtitle("Aucune app configurée");
             self.log_view.buffer().set_text("");
         }
     }
 
-    /// Point d'entree du poll periodique : ne refait un `refresh_now` complet
-    /// (fetch + rebuild GTK) que si `revision()` a change depuis le dernier tick.
     fn refresh(&self) {
         let rev = self.engine.borrow_mut().revision();
         if rev != self.last_seen_revision.get() {
@@ -228,8 +209,7 @@ impl Ui {
         }
     }
 
-    fn render_logs(&self, view: &AppView, incremental: Option<(usize, Vec<String>)>) {
-        let _ = view; // no longer used for log content, kept for call-site symmetry
+    fn render_logs(&self, incremental: Option<(usize, Vec<String>)>) {
         let filter = self.search_entry.text().to_string().to_lowercase();
         let buffer = self.log_view.buffer();
 
@@ -304,7 +284,7 @@ impl Ui {
         dot.set_size_request(10, 10);
         row.add_prefix(&dot);
 
-        let kind_label = gtk::Label::new(Some(kind_label_text(view.kind)));
+        let kind_label = gtk::Label::new(Some(&kind_label_text(view.kind)));
         kind_label.add_css_class("dim-label");
         kind_label.add_css_class("caption");
         row.add_suffix(&kind_label);
@@ -425,45 +405,20 @@ impl Ui {
         w.row.set_title(&view.name);
         w.row.set_subtitle(&row_subtitle(view));
         w.dot.set_css_classes(&["status-dot", status_css_class(view)]);
-        w.kind_label.set_label(kind_label_text(view.kind));
+        w.kind_label.set_label(&kind_label_text(view.kind));
         w.open_btn.set_visible(view.url.is_some());
         w.start_btn.set_sensitive(!view.active);
         w.stop_btn.set_sensitive(view.active);
     }
 
-    /// Petit helper pour rappeler `refresh()` depuis une closure de callback GTK
-    /// sans dupliquer la capture de tous les widgets a chaque fois.
+    /// Rappelle `refresh_now` depuis une closure de callback GTK sans capturer `Rc<Ui>`
+    /// directement (garderait l'UI en vie via un cycle de reference).
     fn weak_refresh(&self) -> impl Fn() + Clone + 'static {
-        let app = self.app.clone();
-        let engine = self.engine.clone();
-        let list_box = self.list_box.clone();
-        let log_view = self.log_view.clone();
-        let search_entry = self.search_entry.clone();
-        let header_label = self.header_label.clone();
-        let selected = self.selected.clone();
-        let last_status = self.last_status.clone();
-        let last_seen_revision = self.last_seen_revision.clone();
-        let since_seq = self.since_seq.clone();
-        let selected_logs = self.selected_logs.clone();
-        let row_widgets = self.row_widgets.clone();
-        let last_row_order = self.last_row_order.clone();
+        let weak = self.self_weak.borrow().clone();
         move || {
-            let ui = Ui {
-                app: app.clone(),
-                engine: engine.clone(),
-                list_box: list_box.clone(),
-                log_view: log_view.clone(),
-                search_entry: search_entry.clone(),
-                header_label: header_label.clone(),
-                selected: selected.clone(),
-                last_status: last_status.clone(),
-                last_seen_revision: last_seen_revision.clone(),
-                since_seq: since_seq.clone(),
-                selected_logs: selected_logs.clone(),
-                row_widgets: row_widgets.clone(),
-                last_row_order: last_row_order.clone(),
-            };
-            ui.refresh_now();
+            if let Some(ui) = weak.upgrade() {
+                ui.refresh_now();
+            }
         }
     }
 }
@@ -473,10 +428,8 @@ fn build_ui(app: &adw::Application) {
 
     let engine = Rc::new(RefCell::new(Engine::new()));
 
-    // `Engine`'s own `Drop` stops all running apps, but that only fires if the last
-    // `Rc<RefCell<Engine>>` reference is actually released — GTK signal-handler closures
-    // holding a clone can outlive `build_ui`'s own drop, so the shutdown app/child process
-    // trees can otherwise survive after the window closes. Stop them explicitly here.
+    // GTK closures can outlive build_ui and keep the last Engine Rc alive past window
+    // close, so its Drop never fires — stop child processes explicitly here instead.
     {
         let engine = engine.clone();
         app.connect_shutdown(move |_| {
@@ -572,7 +525,9 @@ fn build_ui(app: &adw::Application) {
         selected_logs: Rc::new(RefCell::new(Vec::new())),
         row_widgets: Rc::new(RefCell::new(HashMap::new())),
         last_row_order: Rc::new(RefCell::new(Vec::new())),
+        self_weak: RefCell::new(Weak::new()),
     });
+    *ui.self_weak.borrow_mut() = Rc::downgrade(&ui);
 
     {
         let ui = ui.clone();

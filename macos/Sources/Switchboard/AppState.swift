@@ -13,9 +13,7 @@ final class AppState {
     private var lastSeenRevision: UInt64 = 0
     private var sinceSeq: UInt64 = 0
     var selectedLogs: [LogLine] = []
-    /// Mirrors the Rust engine's own MAX_LOG_LINES cap — without this, a client that stays
-    /// caught up with the server never hits the "replace" fallback that would otherwise
-    /// reset this array, so it grows unbounded for the lifetime of the process.
+    /// Mirrors the Rust engine's MAX_LOG_LINES cap so the array can't grow unbounded.
     private static let maxDisplayedLogLines = 5000
 
     var apps: [AppEntry] = []
@@ -39,8 +37,7 @@ final class AppState {
     var filteredLogs: [LogLine] {
         guard selected != nil else { return [] }
         guard !logFilter.isEmpty else { return selectedLogs }
-        let needle = logFilter.lowercased()
-        return selectedLogs.filter { $0.text.lowercased().contains(needle) }
+        return selectedLogs.filter { $0.text.localizedCaseInsensitiveContains(logFilter) }
     }
 
     func start() {
@@ -75,17 +72,8 @@ final class AppState {
             }
             sinceSeq = selectedEntry.logsBaseSeq + UInt64(selectedEntry.logs.count)
         }
-        let strippedForComparison = fetched.map { entry in
-            AppEntry(
-                id: entry.id, name: entry.name, workingDir: entry.workingDir, kind: entry.kind,
-                command: entry.command, url: entry.url, envVars: entry.envVars, autoRestart: entry.autoRestart,
-                startOrder: entry.startOrder, statusLabel: entry.statusLabel, error: entry.error, active: entry.active,
-                logs: [], logsBaseSeq: 0, logsReplace: false,
-                healthy: entry.healthy, cpuPercent: entry.cpuPercent, memoryMb: entry.memoryMb
-            )
-        }
-        if force || strippedForComparison != apps {
-            apps = strippedForComparison
+        if force || fetched != apps {
+            apps = fetched
         }
         notifyNewFailures()
         if selectedID == nil {
@@ -137,10 +125,7 @@ final class AppState {
         refresh(force: true)
     }
 
-    /// `applicationWillTerminate` fires before the process exits, but `DevtoolEngine.deinit`
-    /// does not — the OS reclaims the process without running Swift's deinit chain on
-    /// normal quit, which would otherwise leave supervised app process trees running as
-    /// orphans holding their ports. Call this explicitly from the app delegate instead.
+    /// deinit doesn't run on quit, so call this explicitly from the app delegate to avoid orphaned child processes.
     func stopAllForShutdown() {
         engine.stopAll()
     }
@@ -153,9 +138,7 @@ final class AppState {
         refresh(force: true)
     }
 
-    /// logsBaseSeq is the engine's own globally increasing sequence number for the
-    /// first line in this batch, so it's already a stable id base — no need to track
-    /// one separately on the client.
+    /// logsBaseSeq is already a stable, monotonic id base — no separate counter needed.
     private func makeLogLines(_ texts: [String], baseSeq: UInt64) -> [LogLine] {
         texts.enumerated().map { offset, text in
             LogLine(id: Int(baseSeq) + offset, text: text)
@@ -181,10 +164,7 @@ final class AppState {
         engine.exportConfig(ids: ids, includeEnvVars: includeEnvVars)
     }
 
-    /// Point d'entree unique du flux d'import : panneau d'ouverture natif -> apercu
-    /// -> confirmation -> application. Auto-suffisant (pas de sheet SwiftUI
-    /// necessaire), contrairement a l'export qui a besoin d'une UI de selection
-    /// personnalisee.
+    /// Panneau natif -> apercu -> confirmation -> application, sans sheet SwiftUI dediee.
     func importConfig() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json]

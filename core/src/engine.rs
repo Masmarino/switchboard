@@ -11,12 +11,10 @@ use crate::process_manager::{kill_process_group, run_app_thread, AppStatus, Runn
 
 const MAX_LOG_LINES: usize = 5000;
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(1000);
-const CPU_CHANGE_THRESHOLD: f32 = 0.5; // percentage points
+const CPU_CHANGE_THRESHOLD: f32 = 0.5;
 const MEMORY_CHANGE_THRESHOLD_MB: f64 = 1.0;
 
-/// Vrai si un changement CPU/memoire est assez significatif pour justifier
-/// de reveiller les frontends (bump de revision) — evite de rafraichir tout
-/// le monde pour du bruit de mesure sub-seuil sur un process par ailleurs stable.
+/// Ignore le bruit de mesure sous le seuil pour eviter de bump la revision pour rien.
 fn resource_changed(old_cpu: f32, new_cpu: f32, old_mem: f64, new_mem: f64) -> bool {
     (old_cpu - new_cpu).abs() > CPU_CHANGE_THRESHOLD || (old_mem - new_mem).abs() > MEMORY_CHANGE_THRESHOLD_MB
 }
@@ -50,17 +48,15 @@ impl AppRuntime {
         }
     }
 
-    /// Vide les logs et avance `log_base_seq` au-dela des lignes retirees, pour
-    /// qu'un client qui connaissait une sequence anterieure au clear recoive
-    /// bien un remplacement complet plutot que de silencieusement ne rien voir.
+    /// Avance log_base_seq au-dela des lignes retirees, pour forcer un client en retard
+    /// vers un remplacement complet plutot qu'un silencieux "rien de nouveau".
     fn clear_logs(&mut self) {
         self.log_base_seq += self.logs.len() as u64;
         self.logs.clear();
     }
 }
 
-/// Vue serialisable d'une app et de son etat courant — c'est ce que chaque frontend
-/// (GTK direct, ou FFI JSON pour Swift/C#) consomme pour afficher l'UI.
+/// Vue serialisable d'une app, consommee par chaque frontend (GTK direct, ou FFI JSON).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AppView {
     pub id: Uuid,
@@ -85,8 +81,7 @@ pub struct AppView {
     pub memory_mb: f64,
 }
 
-/// Champs editables d'une app — utilise pour la creation ET la modification, pour
-/// eviter deux jeux de parametres qui divergent au fil des fonctionnalites ajoutees.
+/// Champs editables d'une app, partages entre creation et modification.
 #[derive(Debug, Clone, Default)]
 pub struct AppDraft {
     pub name: String,
@@ -108,8 +103,7 @@ fn status_label(status: &AppStatus) -> &'static str {
     }
 }
 
-/// Facade unique sur la config, les process en cours et leurs logs. Pas de dependance
-/// UI : consomme directement en Rust (frontend Linux/GTK) ou via le shim FFI (macOS/Windows).
+/// Facade sur la config, les process en cours et leurs logs — pas de dependance UI.
 pub struct Engine {
     config: AppConfigList,
     runtimes: HashMap<Uuid, AppRuntime>,
@@ -119,6 +113,8 @@ pub struct Engine {
     sys: sysinfo::System,
     /// Reused across sample_resource_usage calls instead of allocating fresh each time.
     children_scratch: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
+    stack_scratch: Vec<sysinfo::Pid>,
+    visited_scratch: std::collections::HashSet<sysinfo::Pid>,
     last_sample: Option<Instant>,
     revision: u64,
     /// Faux en tests : evite d'ecraser le fichier de config reel de l'utilisateur.
@@ -149,6 +145,8 @@ impl Engine {
             event_rx,
             sys: sysinfo::System::new(),
             children_scratch: HashMap::new(),
+            stack_scratch: Vec::new(),
+            visited_scratch: std::collections::HashSet::new(),
             last_sample: None,
             revision: 0,
             persist,
@@ -161,7 +159,6 @@ impl Engine {
         }
     }
 
-    /// Absorbe les evenements en attente (logs, changements de statut) avant toute lecture.
     pub fn drain_events(&mut self) {
         let mut processed = false;
         while let Ok(event) = self.event_rx.try_recv() {
@@ -203,6 +200,11 @@ impl Engine {
         }
     }
 
+    fn poll(&mut self) {
+        self.drain_events();
+        self.sample_resource_usage();
+    }
+
     /// Echantillonne CPU/memoire des process actifs, au plus une fois par seconde.
     fn sample_resource_usage(&mut self) {
         let now = Instant::now();
@@ -220,10 +222,7 @@ impl Engine {
         if roots.is_empty() {
             return;
         }
-        // Need the whole process table to rebuild the parent/child tree via `parent()` —
-        // a tracked app's real memory usage lives in its subprocesses, not the root pid.
-        // Only cpu+memory requested; we don't read disk/exe/tasks, and parent() isn't
-        // gated by ProcessRefreshKind anyway.
+        // Whole table needed for the parent/child tree — real memory lives in subprocesses.
         self.sys.refresh_processes_specifics(
             sysinfo::ProcessesToUpdate::All,
             true,
@@ -247,10 +246,11 @@ impl Engine {
             }
             let mut cpu = 0.0f32;
             let mut mem_bytes = 0u64;
-            let mut stack = vec![root];
-            let mut visited = std::collections::HashSet::new();
-            while let Some(pid) = stack.pop() {
-                if !visited.insert(pid) {
+            self.stack_scratch.clear();
+            self.stack_scratch.push(root);
+            self.visited_scratch.clear();
+            while let Some(pid) = self.stack_scratch.pop() {
+                if !self.visited_scratch.insert(pid) {
                     continue;
                 }
                 if let Some(process) = self.sys.process(pid) {
@@ -258,7 +258,7 @@ impl Engine {
                     mem_bytes += process.memory();
                 }
                 if let Some(kids) = children.get(&pid) {
-                    stack.extend(kids.iter().copied());
+                    self.stack_scratch.extend(kids.iter().copied());
                 }
             }
             if let Some(rt) = self.runtimes.get_mut(id) {
@@ -277,8 +277,7 @@ impl Engine {
     }
 
     pub fn list_apps(&mut self, logs_for: Option<(Uuid, u64)>) -> Vec<AppView> {
-        self.drain_events();
-        self.sample_resource_usage();
+        self.poll();
         self.config
             .apps
             .iter()
@@ -378,17 +377,13 @@ impl Engine {
         self.config.export_subset(ids, include_env_vars).to_json().unwrap_or_default()
     }
 
-    /// Calcule l'apercu de fusion sans rien modifier — utilise pour le message de
-    /// confirmation avant import. `None` si `json` n'est pas un `AppConfigList` valide.
+    /// Apercu de fusion sans rien modifier. `None` si `json` n'est pas un `AppConfigList` valide.
     pub fn preview_import(&self, json: &str) -> Option<ImportSummary> {
         let incoming = AppConfigList::from_json(json).ok()?;
         Some(self.config.clone().merge_import(incoming))
     }
 
-    /// Applique reellement la fusion et persiste. Seed un `AppRuntime` pour chaque
-    /// app fraichement ajoutee (les apps remplacees gardent leur runtime existant,
-    /// exactement comme `update_app` ne touche jamais `self.runtimes`). `None` si
-    /// `json` n'est pas un `AppConfigList` valide — rien n'est modifie dans ce cas.
+    /// Applique la fusion et persiste. Les apps remplacees gardent leur runtime existant.
     pub fn apply_import(&mut self, json: &str) -> Option<ImportSummary> {
         let incoming = AppConfigList::from_json(json).ok()?;
         let summary = self.config.merge_import(incoming);
@@ -453,12 +448,9 @@ impl Engine {
         }
     }
 
-    /// Demarre les apps regroupees par `start_order` croissant : chaque palier demarre
-    /// en entier avant que le suivant ne soit lance, pour laisser le temps a une
-    /// dependance (ex: l'API) de devenir disponible avant ses dependants. Ne bloque pas
-    /// l'appelant : le decoupage en paliers tourne sur son propre thread, qui envoie un
-    /// `Event::StartRequested` par app — `drain_events` (appele a chaque poll) est seul
-    /// a muter `self.handles`/`self.runtimes`, jamais ce thread directement.
+    /// Demarre par paliers de `start_order` croissant, chacun attendant le precedent.
+    /// Non-bloquant : tourne sur son propre thread, qui pousse des `Event::StartRequested`
+    /// que seul `drain_events` consomme.
     pub fn start_all(&mut self) {
         let mut tiers: Vec<(i32, Uuid)> =
             self.config.apps.iter().map(|a| (a.start_order, a.id)).collect();
@@ -490,12 +482,9 @@ impl Engine {
         }
     }
 
-    /// Cheap poll target: drains pending events, samples resources, and returns
-    /// the resulting revision number. Callers re-fetch `list_apps` only when
-    /// this value changes since their last call.
+    /// Cheap poll target — callers re-fetch `list_apps` only when this changes.
     pub fn revision(&mut self) -> u64 {
-        self.drain_events();
-        self.sample_resource_usage();
+        self.poll();
         self.revision
     }
 }
@@ -670,7 +659,7 @@ mod tests {
     #[test]
     fn start_all_returns_without_blocking_the_calling_thread() {
         let mut engine = temp_engine();
-        // Two distinct tiers -> today's implementation would sleep 400ms inline.
+        // Two tiers means a 400ms inter-tier delay — this must not block start_all itself.
         engine.add_app(AppDraft { start_order: 0, working_dir: Path::new("/nonexistent-a").to_path_buf(), ..base_draft() });
         engine.add_app(AppDraft { start_order: 1, working_dir: Path::new("/nonexistent-b").to_path_buf(), ..base_draft() });
 
@@ -685,8 +674,7 @@ mod tests {
     #[test]
     fn start_all_skips_already_running_apps() {
         let mut engine = temp_engine();
-        // Dossier inexistant -> chaque start_app echoue immediatement en "Failed",
-        // mais on verifie surtout qu'aucun panic ne survient sur une liste vide/etendue.
+        // The nonexistent dir makes start_app fail immediately — just checking start_all doesn't panic.
         engine.add_app(AppDraft {
             working_dir: Path::new("/nonexistent").to_path_buf(),
             ..base_draft()
@@ -760,12 +748,7 @@ mod tests {
     fn list_apps_treats_a_since_seq_ahead_of_reality_as_caught_up_not_a_replace() {
         let mut engine = temp_engine();
         let id = engine.add_app(base_draft());
-        // Client claims to have seen up to sequence 100, but nothing has been
-        // logged yet (log_base_seq is still 0) — client is "ahead" of reality,
-        // which must NOT be misread as caught-up-with-a-future-line; the base
-        // sequence (0) is <= since_seq (100), so this still takes the delta path
-        // and correctly returns an empty delta (nothing new beyond what's there),
-        // not a full replace.
+        // since_seq (100) ahead of log_base_seq (0) must still take the delta path, not replace.
         let apps = engine.list_apps(Some((id, 100)));
         let entry = apps.iter().find(|a| a.id == id).unwrap();
         assert!(entry.logs.is_empty());
@@ -884,10 +867,7 @@ mod tests {
         engine.runtimes.get_mut(&id).unwrap().cpu_percent = 10.0;
         engine.runtimes.get_mut(&id).unwrap().memory_mb = 50.0;
 
-        // Directly exercise the threshold comparison used by sample_resource_usage
-        // without needing a real running process: assert the constants exist and
-        // are applied at the expected magnitude via the public behavior they gate.
-        // (See Step 3 for how this is wired into sample_resource_usage.)
+        // Constants checked directly; behavior is covered by resource_changed's own tests.
         assert!(CPU_CHANGE_THRESHOLD > 0.0);
         assert!(MEMORY_CHANGE_THRESHOLD_MB > 0.0);
     }

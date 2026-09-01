@@ -8,11 +8,14 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+typedef struct AppKind AppKind;
+
 /**
- * Facade unique sur la config, les process en cours et leurs logs. Pas de dependance
- * UI : consomme directement en Rust (frontend Linux/GTK) ou via le shim FFI (macOS/Windows).
+ * Facade sur la config, les process en cours et leurs logs — pas de dependance UI.
  */
 typedef struct Engine Engine;
+
+
 
 struct Engine *switchboard_engine_new(void);
 
@@ -23,11 +26,9 @@ struct Engine *switchboard_engine_new(void);
 void switchboard_engine_free(struct Engine *engine);
 
 /**
- * Retourne la liste des apps (et leur etat courant) en JSON — seule l'app dont
- * l'id correspond a `selected_id` (NULL/vide = aucune) recoit ses logs, et
- * uniquement les lignes posterieures a `since_seq` (sauf remplacement complet
- * signale par `logs_replace` dans la reponse JSON). La chaine retournee doit
- * etre liberee avec [`switchboard_string_free`].
+ * Liste des apps en JSON — seule `selected_id` recoit ses logs (lignes posterieures
+ * a `since_seq`, sauf remplacement complet via `logs_replace`). A liberer avec
+ * [`switchboard_string_free`].
  *
  * # Safety
  * `engine` doit etre un pointeur valide retourne par [`switchboard_engine_new`].
@@ -108,9 +109,8 @@ void switchboard_engine_start_all(struct Engine *engine);
 void switchboard_engine_stop_all(struct Engine *engine);
 
 /**
- * Exporte un sous-ensemble d'apps en JSON, pret a etre ecrit dans un fichier.
- * `ids_json` est un tableau JSON de chaines UUID. La chaine retournee doit etre
- * liberee avec [`switchboard_string_free`].
+ * Sous-ensemble d'apps en JSON (`ids_json` = tableau de chaines UUID), a liberer
+ * avec [`switchboard_string_free`].
  *
  * # Safety
  * `engine` doit etre un pointeur valide. `ids_json` doit etre une chaine C valide.

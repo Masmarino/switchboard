@@ -2,23 +2,13 @@ use adw::prelude::*;
 use gtk::glib;
 use switchboard_core::{AppDraft, AppKind, AppView};
 
-const KIND_IDS: &[AppKind] = &[
-    AppKind::Cargo,
-    AppKind::Npm,
-    AppKind::Dotnet,
-    AppKind::Maven,
-    AppKind::Python,
-    AppKind::Go,
-    AppKind::Raw,
-];
-const KIND_LABELS: [&str; 7] = ["Cargo", "Npm", "Dotnet", "Maven", "Python", "Go", "Raw"];
+use crate::dialog_shell::dialog_shell;
 
 fn kind_to_index(kind: Option<AppKind>) -> u32 {
-    KIND_IDS.iter().position(|k| Some(*k) == kind).unwrap_or(0) as u32
+    AppKind::ALL.iter().position(|k| Some(*k) == kind).unwrap_or(0) as u32
 }
 
-/// Construit puis affiche la fenetre d'ajout/edition d'une app. `existing` preremplit
-/// les champs en mode edition ; `on_save` recoit le draft valide au clic sur "Enregistrer".
+/// `existing` preremplit les champs en mode edition ; `on_save` recoit le draft au clic "Enregistrer".
 pub fn show_app_dialog(
     parent: &impl IsA<gtk::Window>,
     existing: Option<&AppView>,
@@ -41,8 +31,9 @@ pub fn show_app_dialog(
         .build();
     let command_entry = gtk::Entry::builder().text(existing.map(|a| a.command.as_str()).unwrap_or("")).build();
 
+    let kind_labels = AppKind::ALL.map(|k| k.display_name());
     let kind_dropdown = gtk::DropDown::builder()
-        .model(&gtk::StringList::new(&KIND_LABELS))
+        .model(&gtk::StringList::new(&kind_labels))
         .build();
     kind_dropdown.set_selected(kind_to_index(existing.map(|a| a.kind)));
 
@@ -120,27 +111,9 @@ pub fn show_app_dialog(
     page.add(&exec_group);
     page.add(&advanced_group);
 
-    let dialog = adw::Window::builder()
-        .transient_for(parent)
-        .modal(true)
-        .title(title)
-        .default_width(480)
-        .default_height(560)
-        .build();
-
-    let save_btn = gtk::Button::with_label(if existing.is_some() { "Enregistrer" } else { "Ajouter" });
-    save_btn.add_css_class("suggested-action");
-    let cancel_btn = gtk::Button::with_label("Annuler");
-
     let header_title = adw::WindowTitle::new(title, subtitle);
-    let header = adw::HeaderBar::builder().show_end_title_buttons(false).title_widget(&header_title).build();
-    header.pack_end(&save_btn);
-    header.pack_start(&cancel_btn);
-
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&header);
-    content.append(&page);
-    dialog.set_content(Some(&content));
+    let save_label = if existing.is_some() { "Enregistrer" } else { "Ajouter" };
+    let (dialog, save_btn) = dialog_shell(parent, title, Some(&header_title), save_label, (480, 560), &page);
 
     {
         let dialog = dialog.clone();
@@ -160,10 +133,6 @@ pub fn show_app_dialog(
     }
     {
         let dialog = dialog.clone();
-        cancel_btn.connect_clicked(move |_| dialog.close());
-    }
-    {
-        let dialog = dialog.clone();
         save_btn.connect_clicked(move |_| {
             let env_vars = env_buffer
                 .text(&env_buffer.start_iter(), &env_buffer.end_iter(), false)
@@ -177,7 +146,7 @@ pub fn show_app_dialog(
             let draft = AppDraft {
                 name: name_entry.text().trim().to_string(),
                 working_dir: dir_entry.text().trim().into(),
-                kind: KIND_IDS
+                kind: AppKind::ALL
                     .get(kind_dropdown.selected() as usize)
                     .copied()
                     .unwrap_or(AppKind::Cargo),

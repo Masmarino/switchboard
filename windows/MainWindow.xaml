@@ -53,12 +53,8 @@
             <TextBox x:Name="LogFilterBox" Grid.Row="1" PlaceholderText="Filtrer les logs…"
                      Margin="12,0,12,8" TextChanged="OnLogFilterChanged" />
 
-            <!-- RichEditBox instead of a ListView of per-line items — a ListView can't
-                 give text selection that spans multiple rows as one continuous range,
-                 only per-item selection. RichEditBox is one real text document, so
-                 click-drag selection and copy work across lines like a normal text
-                 editor, and we can still append to it without touching existing
-                 content (see RenderLogs). -->
+            <!-- RichEditBox, not a ListView of per-line items, so drag-selecting and
+                 copying spans multiple lines like a normal text editor. -->
             <RichEditBox x:Name="LogEditBox" Grid.Row="2" Background="#1C1C1E" BorderThickness="0"
                          Padding="12" IsReadOnly="True" AcceptsReturn="True"
                          FontFamily="Consolas" FontSize="12" Foreground="#D6D6D8" />

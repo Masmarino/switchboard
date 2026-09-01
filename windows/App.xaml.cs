@@ -20,8 +20,7 @@ public partial class App : Application
         }
         catch
         {
-            // Best-effort : l'app reste utilisable meme si les notifications systeme
-            // ne sont pas disponibles (ex: AUMID non enregistre pour un build unpackaged).
+            // Best-effort : pas de notifications si l'AUMID n'est pas enregistre (build unpackaged).
         }
 
         _window = new MainWindow();

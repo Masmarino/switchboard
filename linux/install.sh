@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Installe Switchboard pour l'utilisateur courant : binaire dans ~/.local/bin,
-# icone dans le theme hicolor, et fichier .desktop pour que GNOME/KDE affichent
-# le bon nom et la bonne icone (sinon ils retombent sur l'application-id brut
-# "com.skolln.switchboard" et une icone generique).
+# Installe le binaire, l'icone et le .desktop pour l'utilisateur courant, sinon
+# GNOME/KDE affichent l'id brut "com.skolln.switchboard" avec une icone generique.
 set -euo pipefail
 cd "$(dirname "$0")"
 

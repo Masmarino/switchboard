@@ -13,6 +13,50 @@ pub enum AppKind {
     Raw,
 }
 
+impl AppKind {
+    pub const ALL: [AppKind; 7] =
+        [AppKind::Cargo, AppKind::Npm, AppKind::Dotnet, AppKind::Maven, AppKind::Python, AppKind::Go, AppKind::Raw];
+
+    /// PascalCase name — matches serde's default enum representation and what the UI displays.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            AppKind::Cargo => "Cargo",
+            AppKind::Npm => "Npm",
+            AppKind::Dotnet => "Dotnet",
+            AppKind::Maven => "Maven",
+            AppKind::Python => "Python",
+            AppKind::Go => "Go",
+            AppKind::Raw => "Raw",
+        }
+    }
+
+    /// Lowercase wire format used across the FFI boundary (frontends send/read this).
+    pub fn ffi_str(self) -> &'static str {
+        match self {
+            AppKind::Cargo => "cargo",
+            AppKind::Npm => "npm",
+            AppKind::Dotnet => "dotnet",
+            AppKind::Maven => "maven",
+            AppKind::Python => "python",
+            AppKind::Go => "go",
+            AppKind::Raw => "raw",
+        }
+    }
+
+    pub fn from_ffi_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "cargo" => AppKind::Cargo,
+            "npm" => AppKind::Npm,
+            "dotnet" => AppKind::Dotnet,
+            "maven" => AppKind::Maven,
+            "python" => AppKind::Python,
+            "go" => AppKind::Go,
+            "raw" => AppKind::Raw,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub id: Uuid,
@@ -23,15 +67,12 @@ pub struct AppConfig {
     /// URL locale de l'app (ex: http://localhost:3000), pour "Ouvrir dans le navigateur".
     #[serde(default)]
     pub url: Option<String>,
-    /// Variables d'environnement injectees dans le process lance.
     #[serde(default)]
     pub env_vars: Vec<(String, String)>,
-    /// Relance automatiquement le process en cas de crash (sortie non nulle, hors arret demande).
+    /// Relance le process en cas de crash (sortie non nulle, hors arret demande).
     #[serde(default)]
     pub auto_restart: bool,
-    /// Ordre de demarrage pour "Tout demarrer" (croissant). Les apps de meme ordre
-    /// demarrent en parallele ; un ordre plus petit demarre avant un ordre plus grand
-    /// (ex: une API avant les apps web qui en dependent).
+    /// Ordre de demarrage croissant pour "Tout demarrer" — meme ordre = parallele.
     #[serde(default)]
     pub start_order: i32,
 }
@@ -69,8 +110,7 @@ impl AppConfigList {
         }
     }
 
-    /// Copie filtree pour l'export : ne garde que les apps dont l'id est dans `ids`,
-    /// et vide `env_vars` si `include_env_vars` est faux.
+    /// Copie filtree par `ids`, avec `env_vars` vide si `include_env_vars` est faux.
     pub fn export_subset(&self, ids: &[Uuid], include_env_vars: bool) -> AppConfigList {
         let apps = self
             .apps
@@ -87,11 +127,9 @@ impl AppConfigList {
         AppConfigList { apps }
     }
 
-    /// Fusionne `incoming` dans `self`. Dedoublonnage par nom (trim + minuscules
-    /// Unicode) : une app dont le nom matche une app locale existante la remplace
-    /// en place (meme id conserve) ; une app sans correspondance est ajoutee avec
-    /// un nouvel id (jamais celui du fichier importe, pour eviter toute collision).
-    /// Les entrees au nom vide (apres trim) sont ignorees et comptees dans `invalid`.
+    /// Dedoublonne par nom (trim + minuscules Unicode) : match existant → remplace en
+    /// place (id conserve) ; sinon ajoute avec un nouvel id (jamais celui de `incoming`).
+    /// Nom vide apres trim → ignore et compte dans `invalid`.
     pub fn merge_import(&mut self, incoming: AppConfigList) -> ImportSummary {
         let mut summary = ImportSummary::default();
         for mut incoming_app in incoming.apps {
@@ -133,9 +171,7 @@ impl AppConfigList {
             .map(|dirs| dirs.config_dir().join("apps.json"))
     }
 
-    /// Charge la config sauvegardee, ou une liste vide au premier lancement — pas de
-    /// projet pre-rempli : Switchboard est un outil generique, sans connaissance des
-    /// projets de la personne qui l'utilise.
+    /// Liste vide au premier lancement — pas de projet pre-rempli.
     pub fn load_or_default() -> Self {
         if let Some(path) = Self::config_path() {
             if let Ok(contents) = std::fs::read_to_string(&path) {

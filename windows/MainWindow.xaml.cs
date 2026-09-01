@@ -37,10 +37,9 @@ public sealed partial class MainWindow : Window
     private ulong _lastSeenRevision;
     private ulong _sinceSeq;
     private readonly List<string> _selectedLogs = [];
-    /// Mirrors the Rust engine's own MAX_LOG_LINES cap — without this, a client that stays
-    /// caught up with the server never hits the "replace" fallback that would otherwise
-    /// reset _selectedLogs, so it grows unbounded for the lifetime of the process.
+    /// Mirrors the Rust engine's MAX_LOG_LINES cap so a caught-up client never grows _selectedLogs unbounded.
     private const int MaxDisplayedLogLines = 5000;
+    private static readonly string IconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "icon.ico");
     private string _logFilter = "";
     /// Row widgets by app id, kept alive so RefreshNow can patch rows in place.
     private readonly Dictionary<string, RowWidgets> _rowWidgets = [];
@@ -64,27 +63,20 @@ public sealed partial class MainWindow : Window
         _timer.Tick += (_, _) => Refresh();
         _timer.Start();
 
-        // Closing the window (or "Quitter" in the tray menu, which also closes it) ends
-        // the process without running Engine's own cleanup-on-drop reliably — the OS
-        // reclaims the process before .NET finalizers run. Stop supervised app trees
-        // explicitly so they don't survive as orphans holding their ports.
+        // .NET finalizers aren't reliable at process exit — stop child processes explicitly.
         Closed += (_, _) => { _engine.StopAll(); _trayIcon?.Dispose(); };
 
         RefreshNow();
     }
 
-    /// <summary>
-    /// WinUI3 (app non packagee) n'a pas d'API de tray icon native — NotifyIcon (WinForms)
-    /// est l'approche standard dans ce cas. Non teste (pas de machine Windows disponible).
-    /// </summary>
+    /// <summary>WinUI3 (app non packagee) n'a pas de tray icon native ; NotifyIcon (WinForms) est l'approche standard.</summary>
     private void SetupTrayIcon()
     {
         try
         {
-            var iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "icon.ico");
             _trayIcon = new WinForms.NotifyIcon
             {
-                Icon = File.Exists(iconPath) ? new System.Drawing.Icon(iconPath) : System.Drawing.SystemIcons.Application,
+                Icon = File.Exists(IconPath) ? new System.Drawing.Icon(IconPath) : System.Drawing.SystemIcons.Application,
                 Text = "Switchboard",
                 Visible = true,
             };
@@ -96,6 +88,9 @@ public sealed partial class MainWindow : Window
             // Best-effort : l'app reste utilisable sans icone de tray.
         }
     }
+
+    private void InitPicker(object picker) =>
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
 
     private void RebuildTrayMenu()
     {
@@ -131,53 +126,48 @@ public sealed partial class MainWindow : Window
         _trayIcon.ContextMenuStrip = menu;
     }
 
+    private AppEntry? FindApp(string? id) => _apps.FirstOrDefault(a => a.Id == id);
+
     private void RefreshNow()
     {
         // Set when RenderLogs can append without a full rebuild.
         (int Trimmed, List<string> NewLines)? incrementalAppend = null;
 
         _apps = _engine.ListApps(_selectedId, _sinceSeq);
-        if (_selectedId is { } id)
+        var selected = FindApp(_selectedId);
+        if (selected is { } view)
         {
-            var view = _apps.FirstOrDefault(a => a.Id == id);
-            if (view is not null)
+            if (view.LogsReplace)
             {
-                if (view.LogsReplace)
-                {
-                    _selectedLogs.Clear();
-                    _selectedLogs.AddRange(view.Logs);
-                }
-                else if (view.Logs.Count > 0)
-                {
-                    // If we were empty, LogEditBox still shows the placeholder — needs a full render.
-                    var wasEmpty = _selectedLogs.Count == 0;
-                    _selectedLogs.AddRange(view.Logs);
-                    var overflow = _selectedLogs.Count - MaxDisplayedLogLines;
-                    if (overflow > 0)
-                    {
-                        _selectedLogs.RemoveRange(0, overflow);
-                    }
-                    if (!wasEmpty)
-                    {
-                        incrementalAppend = (Math.Max(overflow, 0), view.Logs);
-                    }
-                }
-                _sinceSeq = view.LogsBaseSeq + (ulong)view.Logs.Count;
+                _selectedLogs.Clear();
+                _selectedLogs.AddRange(view.Logs);
             }
+            else if (view.Logs.Count > 0)
+            {
+                // If we were empty, LogEditBox still shows the placeholder — needs a full render.
+                var wasEmpty = _selectedLogs.Count == 0;
+                _selectedLogs.AddRange(view.Logs);
+                var overflow = _selectedLogs.Count - MaxDisplayedLogLines;
+                if (overflow > 0)
+                {
+                    _selectedLogs.RemoveRange(0, overflow);
+                }
+                if (!wasEmpty)
+                {
+                    incrementalAppend = (Math.Max(overflow, 0), view.Logs);
+                }
+            }
+            _sinceSeq = view.LogsBaseSeq + (ulong)view.Logs.Count;
         }
         NotifyNewFailures();
         RebuildTrayMenu();
-        if (_selectedId is null)
+        if (selected is null)
         {
-            _selectedId = _apps.FirstOrDefault()?.Id;
-            if (_selectedId is not null)
+            // New selection: reset log tracking so a stale _sinceSeq isn't diffed against a different app.
+            selected = _apps.FirstOrDefault();
+            _selectedId = selected?.Id;
+            if (selected is not null)
             {
-                // Just adopted a fallback selection (first launch, or the
-                // previously-selected app was just deleted) — its log-tracking
-                // state must start fresh, or a stale _sinceSeq left over from
-                // whichever app was selected before would be diffed against this
-                // different app's own sequence numbers on the next refresh and
-                // silently show a truncated or empty log view.
                 _sinceSeq = 0;
                 _selectedLogs.Clear();
             }
@@ -188,7 +178,6 @@ public sealed partial class MainWindow : Window
 
         if (orderUnchanged && _rowWidgets.Count > 0)
         {
-            // Same apps, same order — patch rows in place instead of rebuilding.
             foreach (var app in _apps)
             {
                 if (_rowWidgets.TryGetValue(app.Id, out var w))
@@ -210,7 +199,6 @@ public sealed partial class MainWindow : Window
             _lastRowOrder = currentOrder;
         }
 
-        var selected = _apps.FirstOrDefault(a => a.Id == _selectedId);
         if (selected is null)
         {
             DetailTitle.Text = "Switchboard";
@@ -226,10 +214,6 @@ public sealed partial class MainWindow : Window
         RenderLogs(incrementalAppend);
     }
 
-    /// <summary>
-    /// Point d'entree du timer de poll : ne relance RefreshNow (fetch complet +
-    /// reconstruction UI) que si la revision moteur a change depuis le dernier tick.
-    /// </summary>
     private void Refresh()
     {
         var rev = _engine.Revision();
@@ -245,10 +229,8 @@ public sealed partial class MainWindow : Window
         var filterActive = !string.IsNullOrEmpty(_logFilter);
         var document = LogEditBox.Document;
 
-        // Take the incremental path whenever the last render was the full, unfiltered
-        // log — we then know exactly which lines are still on screen (_renderedLineLengths)
-        // and can delete a trimmed prefix by its exact character length instead of
-        // relying on ITextRange's paragraph counting.
+        // _renderedLineLengths only tracks the full unfiltered log, so an exact-length
+        // trim (instead of ITextRange's unreliable paragraph counting) needs that too.
         if (!filterActive && _logRenderedUnfiltered && incremental is { } inc && inc.NewLines.Count > 0
             && inc.Trimmed <= _renderedLineLengths.Count)
         {
@@ -339,6 +321,7 @@ public sealed partial class MainWindow : Window
     private static readonly SolidColorBrush StoppedBrush = new(Color.FromArgb(255, 142, 142, 147));
     private static readonly SolidColorBrush ErrorTextBrush = new(Colors.OrangeRed);
     private static readonly SolidColorBrush NormalTextBrush = new(Colors.Gray);
+    private static readonly SolidColorBrush KindBadgeBrush = new(Colors.Gray) { Opacity = 0.15 };
 
     private static SolidColorBrush StatusDotBrush(string statusLabel) => statusLabel switch
     {
@@ -361,7 +344,7 @@ public sealed partial class MainWindow : Window
         var kindText = new TextBlock { Text = app.Kind.Label(), FontSize = 10, FontFamily = new FontFamily("Consolas") };
         var kindBadge = new Border
         {
-            Background = new SolidColorBrush(Colors.Gray) { Opacity = 0.15 },
+            Background = KindBadgeBrush,
             CornerRadius = new CornerRadius(5),
             Padding = new Thickness(6, 1, 6, 1),
             Margin = new Thickness(8, 0, 0, 0),
@@ -384,9 +367,7 @@ public sealed partial class MainWindow : Window
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
 
-        // Assigned below once every widget exists — the closures capture `w` itself
-        // (not `app`), so they always read CurrentApp's latest value even after
-        // UpdateRow patches a reused row.
+        // Assigned below once every widget exists — closures capture w, not app; see RowWidgets.CurrentApp.
         RowWidgets w = null!;
 
         var openBtn = new Button { Content = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), Margin = new Thickness(0, 0, 4, 0) };
@@ -492,14 +473,13 @@ public sealed partial class MainWindow : Window
     private async void OnExportLogsClicked(object sender, RoutedEventArgs e)
     {
         if (_selectedId is not { } id) return;
-        var app = _apps.FirstOrDefault(a => a.Id == id);
+        var app = FindApp(id);
         var picker = new Windows.Storage.Pickers.FileSavePicker
         {
             SuggestedFileName = $"{app?.Name ?? "logs"}.log",
         };
         picker.FileTypeChoices.Add("Fichier log", [".log", ".txt"]);
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+        InitPicker(picker);
 
         var file = await picker.PickSaveFileAsync();
         if (file is not null)
@@ -511,12 +491,11 @@ public sealed partial class MainWindow : Window
     private async void OnAboutClicked(object sender, RoutedEventArgs e)
     {
         var headerPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-        var iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "icon.ico");
-        if (File.Exists(iconPath))
+        if (File.Exists(IconPath))
         {
             var image = new Image
             {
-                Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(iconPath)),
+                Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(IconPath)),
                 Width = 44,
                 Height = 44,
             };
@@ -557,11 +536,7 @@ public sealed partial class MainWindow : Window
         await dialog.ShowAsync();
     }
 
-    /// <summary>
-    /// A clickable "Liens" row: icon + title/subtitle + external-link glyph, wrapped in a
-    /// HyperlinkButton so it keeps the built-in URI-launch behavior of the plain links this
-    /// replaces, while visually matching the icon-led rows used on macOS/Linux.
-    /// </summary>
+    // HyperlinkButton, not a plain Button, for its built-in URI-launch behavior.
     private static HyperlinkButton MakeAboutLinkRow(string glyph, string title, string subtitle, string uri)
     {
         var icon = new FontIcon { Glyph = glyph, FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 15, Foreground = SectionTitleBrush };
@@ -632,8 +607,7 @@ public sealed partial class MainWindow : Window
         var savePicker = new Windows.Storage.Pickers.FileSavePicker();
         savePicker.FileTypeChoices.Add("Configuration JSON", new List<string> { ".json" });
         savePicker.SuggestedFileName = "switchboard-config";
-        var pickerHwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        WinRT.Interop.InitializeWithWindow.Initialize(savePicker, pickerHwnd);
+        InitPicker(savePicker);
         var file = await savePicker.PickSaveFileAsync();
         if (file is not null)
         {
@@ -645,8 +619,7 @@ public sealed partial class MainWindow : Window
     {
         var openPicker = new Windows.Storage.Pickers.FileOpenPicker();
         openPicker.FileTypeFilter.Add(".json");
-        var pickerHwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        WinRT.Interop.InitializeWithWindow.Initialize(openPicker, pickerHwnd);
+        InitPicker(openPicker);
         var file = await openPicker.PickSingleFileAsync();
         if (file is null)
         {
@@ -719,8 +692,7 @@ public sealed partial class MainWindow : Window
         browseDirBtn.Click += async (_, _) =>
         {
             var folderPicker = new Windows.Storage.Pickers.FolderPicker();
-            var pickerHwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-            WinRT.Interop.InitializeWithWindow.Initialize(folderPicker, pickerHwnd);
+            InitPicker(folderPicker);
             var folder = await folderPicker.PickSingleFolderAsync();
             if (folder is not null)
             {
@@ -775,7 +747,7 @@ public sealed partial class MainWindow : Window
             Width = 36,
             Height = 36,
             CornerRadius = new CornerRadius(18),
-            Background = new SolidColorBrush(Color.FromArgb(255, 0x04, 0x09, 0x43)),
+            Background = SectionTitleBrush,
             Child = new TextBlock
             {
                 Text = existing is not null ? "✎" : "+",
@@ -821,12 +793,7 @@ public sealed partial class MainWindow : Window
         if (await dialog.ShowAsync() == ContentDialogResult.Primary)
         {
             var kind = KindOptions[Math.Max(0, kindCombo.SelectedIndex)].Kind.ToFfiValue();
-            var envVars = envVarsBox.Text
-                .Split('\n')
-                .Select(line => line.Split('=', 2))
-                .Where(parts => parts.Length == 2 && parts[0].Trim().Length > 0)
-                .Select(parts => new List<string> { parts[0].Trim(), parts[1].Trim() })
-                .ToList();
+            var envVars = AppEntry.ParseEnvVarsText(envVarsBox.Text);
 
             var draft = new AppDraftPayload
             {
@@ -854,11 +821,6 @@ public sealed partial class MainWindow : Window
 
     private static readonly SolidColorBrush SectionTitleBrush = new(Color.FromArgb(255, 0x04, 0x09, 0x43));
 
-    /// <summary>
-    /// Wraps a group of field rows in a titled "card" — a rounded, tinted-background
-    /// container with a bold navy section title above it, mirroring the macOS/Linux
-    /// add-app dialog redesign (System Settings / GNOME PreferencesGroup style).
-    /// </summary>
     private static StackPanel MakeSectionCard(string title, params FrameworkElement[] rows)
     {
         var titleBlock = new TextBlock
@@ -890,10 +852,7 @@ public sealed partial class MainWindow : Window
         return container;
     }
 
-    /// <summary>
-    /// A label + control row with a fixed-width label column, so every row's control
-    /// lines up into a clean grid regardless of label length.
-    /// </summary>
+    /// <summary>Fixed-width label column so rows align regardless of label length.</summary>
     private static Grid MakeFieldRow(string label, FrameworkElement control)
     {
         var grid = new Grid();

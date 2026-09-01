@@ -15,10 +15,10 @@ struct SwitchboardApp: App {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        // `appDelegate` needs a reference to `state` to stop supervised apps on quit;
-        // wiring it here (rather than `init`) is safe since `body` always runs at least
-        // once before `applicationWillTerminate` could possibly fire.
-        let _ = { appDelegate.state = state }()
+        // Wired here rather than `init` — `body` always runs at least once before
+        // `applicationWillTerminate` could possibly fire. `let _ =`, not a bare statement,
+        // because SceneBuilder tries to treat a plain expression-statement as a Scene.
+        let _ = (appDelegate.state = state)
         WindowGroup {
             ContentView(state: state)
         }

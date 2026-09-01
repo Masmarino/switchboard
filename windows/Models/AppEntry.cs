@@ -62,6 +62,14 @@ public class AppEntry
     public string EnvVarsText =>
         string.Join("\n", EnvVars.Where(p => p.Count == 2).Select(p => $"{p[0]}={p[1]}"));
 
+    /// Inverse of EnvVarsText — kept alongside it so the CLE=valeur format is defined once.
+    public static List<List<string>> ParseEnvVarsText(string text) =>
+        text.Split('\n')
+            .Select(line => line.Split('=', 2))
+            .Where(parts => parts.Length == 2 && parts[0].Trim().Length > 0)
+            .Select(parts => new List<string> { parts[0].Trim(), parts[1].Trim() })
+            .ToList();
+
     public string Subtitle
     {
         get

@@ -14,7 +14,6 @@ pub struct CommandSpec {
     pub args: Vec<String>,
 }
 
-/// Mots de l'utilisateur si non vide, sinon les mots par defaut.
 fn command_words_or(command: &str, defaults: &[&str]) -> Vec<String> {
     if command.trim().is_empty() {
         defaults.iter().map(|s| s.to_string()).collect()
@@ -71,8 +70,7 @@ pub fn resolve_final_status(result: &std::io::Result<i32>, stop_requested: bool)
     }
 }
 
-/// Une sortie est consideree comme un crash (candidat au redemarrage automatique) si
-/// le process n'a pas ete arrete volontairement et n'a pas quitte proprement (code 0).
+/// Crash = ni arret volontaire, ni sortie propre (code 0) — candidat au redemarrage auto.
 fn is_crash(result: &std::io::Result<i32>, stop_requested: bool) -> bool {
     if stop_requested {
         return false;
@@ -103,9 +101,8 @@ impl RunningHandle {
     }
 }
 
-/// Sur Unix, `pgid` est le vrai group id de process (negation pour cibler le groupe entier).
-/// Sur Windows, il s'agit simplement du PID du process racine ; `taskkill /T` se charge
-/// de descendre l'arbre de process.
+/// Unix : vrai group id (negation pour cibler tout le groupe). Windows : PID racine,
+/// `taskkill /T` descend l'arbre.
 #[cfg(unix)]
 pub fn kill_process_group(pgid: i32) {
     unsafe {
@@ -120,17 +117,14 @@ pub fn kill_process_group(pid: i32) {
         .output();
 }
 
-/// Echappe une valeur pour l'inserer telle quelle dans une commande shell
-/// (simple-quote, en doublant les simple-quotes internes).
+/// Simple-quote une valeur pour une commande shell (double les simple-quotes internes).
 #[cfg(unix)]
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// Les apps GUI macOS (lancees depuis le Finder/Dock, pas un terminal) heritent d'un
-/// PATH minimal qui ne contient ni `~/.cargo/bin` ni les chemins nvm/homebrew ajoutes
-/// via `.zprofile`/`.zshrc`. On passe donc par un shell de connexion interactif
-/// (`-i -l`) pour que ces fichiers soient source avant d'executer la vraie commande,
+/// Les apps GUI macOS heritent d'un PATH minimal (pas de `~/.cargo/bin`, nvm, homebrew) —
+/// un shell de connexion interactif (`-i -l`) source `.zprofile`/`.zshrc` avant la commande,
 /// sinon `cargo`/`npm`/etc. echouent avec "No such file or directory" meme installes.
 #[cfg(unix)]
 fn spawn_process(
@@ -162,11 +156,8 @@ fn spawn_process(
     cmd.spawn()
 }
 
-/// `Command::new` ne sait pas executer les scripts `.cmd`/`.bat` (ex: `npm.cmd`,
-/// l'executable reel de npm sur Windows) car `CreateProcess` ne les reconnait pas
-/// directement sans passer par un interpreteur de commandes. `cmd.exe /C` resout
-/// le PATH lui-meme (y compris .cmd/.bat) et reproduit ce qu'un utilisateur taperait
-/// dans une invite de commandes.
+/// `Command::new` ne sait pas executer les `.cmd`/`.bat` (npm.cmd, etc.) directement —
+/// `cmd.exe /C` resout le PATH lui-meme, .cmd/.bat compris.
 #[cfg(windows)]
 fn spawn_process(
     spec: &CommandSpec,
@@ -229,8 +220,7 @@ fn run_one_command(
     Ok(status.code().unwrap_or(-1))
 }
 
-/// Boucle d'execution avec redemarrage automatique optionnel : tourne jusqu'a un arret
-/// volontaire, une sortie propre (code 0), ou un crash si `auto_restart` est desactive.
+/// Tourne jusqu'a un arret volontaire, une sortie propre, ou un crash si auto_restart est faux.
 fn run_with_auto_restart(
     config: &AppConfig,
     spec: &CommandSpec,

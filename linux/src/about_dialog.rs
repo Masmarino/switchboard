@@ -30,9 +30,7 @@ const LINKS: &[AboutLink] = &[
     },
 ];
 
-/// Fenetre "A propos" — reprend le meme langage visuel que `add_dialog` (groupe
-/// libadwaita avec lignes iconees) plutot que le `gtk::AboutDialog` generique
-/// utilise auparavant, pour rester coherent avec le reste de l'app.
+/// Meme langage visuel que `add_dialog` plutot que le `gtk::AboutDialog` generique.
 pub fn show_about_dialog(parent: &impl IsA<gtk::Window>) {
     let icon = gtk::Image::from_icon_name(APP_ID);
     icon.set_pixel_size(64);

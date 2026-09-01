@@ -2,9 +2,7 @@ import AppKit
 import SwiftUI
 
 /// Real NSTextView instead of a stack of Text views — gives native multi-line
-/// selection and copy, which SwiftUI's per-view text selection can't do across
-/// rows. NSTextView also lays out large text lazily on its own, so this doesn't
-/// give up the perf win the LazyVStack version was built for.
+/// selection and copy across rows, which SwiftUI can't do per-view.
 struct LogTextView: NSViewRepresentable {
     let lines: [LogLine]
 
@@ -59,9 +57,7 @@ struct LogTextView: NSViewRepresentable {
                 return
             }
 
-            // matchIndex old lines were trimmed off the front; anything past
-            // lastLines.count is a new arrival — append/delete just those deltas
-            // instead of rebuilding the whole text.
+            // Patch just the delta (dropped prefix, appended suffix) instead of a full rebuild.
             if matchIndex > 0 {
                 let droppedText = lastLines[0..<matchIndex].map(\.text).joined(separator: "\n") + "\n"
                 let length = min((droppedText as NSString).length, storage.length)

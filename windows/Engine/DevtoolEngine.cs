@@ -4,11 +4,7 @@ using Switchboard.Models;
 
 namespace Switchboard.Engine;
 
-/// <summary>
-/// Wrapper P/Invoke sur switchboard_ffi.dll (genere depuis le crate Rust `ffi`,
-/// lui-meme un shim C ABI sur `switchboard-core`). Toutes les structures riches
-/// passent en JSON plutot qu'en marshaling manuel de structs Rust/C#.
-/// </summary>
+/// <summary>Wrapper P/Invoke sur switchboard_ffi.dll ; tout passe en JSON, pas de marshaling de structs.</summary>
 public sealed class DevtoolEngine : IDisposable
 {
     private const string Dll = "switchboard_ffi";
@@ -40,17 +36,8 @@ public sealed class DevtoolEngine : IDisposable
 
     public List<AppEntry> ListApps(string? selectedId, ulong sinceSeq)
     {
-        var raw = switchboard_engine_list_apps_json(_handle, selectedId, sinceSeq);
-        if (raw == IntPtr.Zero) return [];
-        try
-        {
-            var json = Marshal.PtrToStringUTF8(raw) ?? "[]";
-            return JsonSerializer.Deserialize<List<AppEntry>>(json) ?? [];
-        }
-        finally
-        {
-            switchboard_string_free(raw);
-        }
+        var json = ReadAndFreeString(switchboard_engine_list_apps_json(_handle, selectedId, sinceSeq)) ?? "[]";
+        return JsonSerializer.Deserialize<List<AppEntry>>(json) ?? [];
     }
 
     public ulong Revision() => switchboard_engine_revision(_handle);
@@ -75,19 +62,8 @@ public sealed class DevtoolEngine : IDisposable
 
     public bool ExportLogs(string id, string path) => switchboard_engine_export_logs(_handle, id, path);
 
-    public string ExportConfig(List<string> ids, bool includeEnvVars)
-    {
-        var raw = switchboard_engine_export_config_json(_handle, JsonSerializer.Serialize(ids), includeEnvVars);
-        if (raw == IntPtr.Zero) return "{}";
-        try
-        {
-            return Marshal.PtrToStringUTF8(raw) ?? "{}";
-        }
-        finally
-        {
-            switchboard_string_free(raw);
-        }
-    }
+    public string ExportConfig(List<string> ids, bool includeEnvVars) =>
+        ReadAndFreeString(switchboard_engine_export_config_json(_handle, JsonSerializer.Serialize(ids), includeEnvVars)) ?? "{}";
 
     public ImportSummary? PreviewImportConfig(string configJson) => DecodeSummary(switchboard_engine_preview_import_json(_handle, configJson));
 
@@ -95,11 +71,16 @@ public sealed class DevtoolEngine : IDisposable
 
     private static ImportSummary? DecodeSummary(IntPtr raw)
     {
+        var json = ReadAndFreeString(raw);
+        return json is null ? null : JsonSerializer.Deserialize<ImportSummary>(json);
+    }
+
+    private static string? ReadAndFreeString(IntPtr raw)
+    {
         if (raw == IntPtr.Zero) return null;
         try
         {
-            var json = Marshal.PtrToStringUTF8(raw);
-            return json is null ? null : JsonSerializer.Deserialize<ImportSummary>(json);
+            return Marshal.PtrToStringUTF8(raw);
         }
         finally
         {

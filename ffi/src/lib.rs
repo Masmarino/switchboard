@@ -1,8 +1,5 @@
 //! Shim C ABI pour le moteur `switchboard-core`, consomme par les frontends natifs
-//! macOS (Swift) et Windows (C#). Toutes les structures riches passent en JSON pour
-//! eviter le marshaling manuel de structs a travers la frontiere FFI — l'app ne
-//! manipule qu'une poignee d'apps et quelques lignes de logs par seconde, le cout
-//! JSON est negligeable face a la simplicite gagnee.
+//! macOS (Swift) et Windows (C#). Tout passe en JSON plutot qu'en marshaling de structs.
 
 use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
@@ -21,13 +18,17 @@ unsafe fn c_str_to_string(ptr: *const c_char) -> Option<String> {
     unsafe { CStr::from_ptr(ptr) }.to_str().ok().map(str::to_owned)
 }
 
+/// # Safety
+/// `ptr` doit etre un pointeur C valide vers une chaine NUL-terminee, ou NULL.
+unsafe fn parse_uuid_arg(ptr: *const c_char) -> Option<Uuid> {
+    (unsafe { c_str_to_string(ptr) }).and_then(|s| Uuid::from_str(&s).ok())
+}
+
 fn string_to_c(s: String) -> *mut c_char {
     CString::new(s).map(CString::into_raw).unwrap_or(std::ptr::null_mut())
 }
 
-/// Convertit un tableau JSON de chaines UUID (`["uuid1","uuid2"]`) en `Vec<Uuid>` ;
-/// les entrees invalides sont simplement ignorees plutot que de faire echouer tout
-/// l'appel.
+/// Chaines UUID JSON (`["uuid1","uuid2"]`) en `Vec<Uuid>` ; entrees invalides ignorees.
 fn parse_id_list(json: &str) -> Vec<Uuid> {
     serde_json::from_str::<Vec<String>>(json)
         .unwrap_or_default()
@@ -56,15 +57,7 @@ struct FfiAppDraft {
 
 impl From<FfiAppDraft> for AppDraft {
     fn from(d: FfiAppDraft) -> Self {
-        let kind = match d.kind.as_str() {
-            "cargo" => AppKind::Cargo,
-            "npm" => AppKind::Npm,
-            "dotnet" => AppKind::Dotnet,
-            "maven" => AppKind::Maven,
-            "python" => AppKind::Python,
-            "go" => AppKind::Go,
-            _ => AppKind::Raw,
-        };
+        let kind = AppKind::from_ffi_str(&d.kind).unwrap_or(AppKind::Raw);
         AppDraft {
             name: d.name,
             working_dir: PathBuf::from(d.working_dir),
@@ -92,11 +85,9 @@ pub unsafe extern "C" fn switchboard_engine_free(engine: *mut Engine) {
     }
 }
 
-/// Retourne la liste des apps (et leur etat courant) en JSON — seule l'app dont
-/// l'id correspond a `selected_id` (NULL/vide = aucune) recoit ses logs, et
-/// uniquement les lignes posterieures a `since_seq` (sauf remplacement complet
-/// signale par `logs_replace` dans la reponse JSON). La chaine retournee doit
-/// etre liberee avec [`switchboard_string_free`].
+/// Liste des apps en JSON — seule `selected_id` recoit ses logs (lignes posterieures
+/// a `since_seq`, sauf remplacement complet via `logs_replace`). A liberer avec
+/// [`switchboard_string_free`].
 ///
 /// # Safety
 /// `engine` doit etre un pointeur valide retourne par [`switchboard_engine_new`].
@@ -108,9 +99,7 @@ pub unsafe extern "C" fn switchboard_engine_list_apps_json(
     since_seq: u64,
 ) -> *mut c_char {
     let engine = unsafe { &mut *engine };
-    let logs_for = (unsafe { c_str_to_string(selected_id) })
-        .and_then(|s| Uuid::from_str(&s).ok())
-        .map(|id| (id, since_seq));
+    let logs_for = (unsafe { parse_uuid_arg(selected_id) }).map(|id| (id, since_seq));
     let apps = engine.list_apps(logs_for);
     string_to_c(serde_json::to_string(&apps).unwrap_or_else(|_| "[]".to_string()))
 }
@@ -149,7 +138,7 @@ pub unsafe extern "C" fn switchboard_engine_update_app_json(
     draft_json: *const c_char,
 ) {
     let engine = unsafe { &mut *engine };
-    let Some(id) = (unsafe { c_str_to_string(id) }).and_then(|s| Uuid::from_str(&s).ok()) else { return };
+    let Some(id) = (unsafe { parse_uuid_arg(id) }) else { return };
     let Some(json) = (unsafe { c_str_to_string(draft_json) }) else { return };
     if let Ok(draft) = serde_json::from_str::<FfiAppDraft>(&json) {
         engine.update_app(id, draft.into());
@@ -161,7 +150,7 @@ pub unsafe extern "C" fn switchboard_engine_update_app_json(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn switchboard_engine_remove_app(engine: *mut Engine, id: *const c_char) {
     let engine = unsafe { &mut *engine };
-    if let Some(id) = unsafe { c_str_to_string(id) }.and_then(|s| Uuid::from_str(&s).ok()) {
+    if let Some(id) = unsafe { parse_uuid_arg(id) } {
         engine.remove_app(id);
     }
 }
@@ -171,7 +160,7 @@ pub unsafe extern "C" fn switchboard_engine_remove_app(engine: *mut Engine, id: 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn switchboard_engine_start_app(engine: *mut Engine, id: *const c_char) {
     let engine = unsafe { &mut *engine };
-    if let Some(id) = unsafe { c_str_to_string(id) }.and_then(|s| Uuid::from_str(&s).ok()) {
+    if let Some(id) = unsafe { parse_uuid_arg(id) } {
         engine.start_app(id);
     }
 }
@@ -181,7 +170,7 @@ pub unsafe extern "C" fn switchboard_engine_start_app(engine: *mut Engine, id: *
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn switchboard_engine_stop_app(engine: *mut Engine, id: *const c_char) {
     let engine = unsafe { &mut *engine };
-    if let Some(id) = unsafe { c_str_to_string(id) }.and_then(|s| Uuid::from_str(&s).ok()) {
+    if let Some(id) = unsafe { parse_uuid_arg(id) } {
         engine.stop_app(id);
     }
 }
@@ -191,7 +180,7 @@ pub unsafe extern "C" fn switchboard_engine_stop_app(engine: *mut Engine, id: *c
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn switchboard_engine_clear_logs(engine: *mut Engine, id: *const c_char) {
     let engine = unsafe { &mut *engine };
-    if let Some(id) = unsafe { c_str_to_string(id) }.and_then(|s| Uuid::from_str(&s).ok()) {
+    if let Some(id) = unsafe { parse_uuid_arg(id) } {
         engine.clear_logs(id);
     }
 }
@@ -207,7 +196,7 @@ pub unsafe extern "C" fn switchboard_engine_export_logs(
     path: *const c_char,
 ) -> bool {
     let engine = unsafe { &*engine };
-    let Some(id) = (unsafe { c_str_to_string(id) }).and_then(|s| Uuid::from_str(&s).ok()) else { return false };
+    let Some(id) = (unsafe { parse_uuid_arg(id) }) else { return false };
     let Some(path) = (unsafe { c_str_to_string(path) }) else { return false };
     engine.export_logs(id, std::path::Path::new(&path)).is_ok()
 }
@@ -228,9 +217,8 @@ pub unsafe extern "C" fn switchboard_engine_stop_all(engine: *mut Engine) {
     engine.stop_all_running();
 }
 
-/// Exporte un sous-ensemble d'apps en JSON, pret a etre ecrit dans un fichier.
-/// `ids_json` est un tableau JSON de chaines UUID. La chaine retournee doit etre
-/// liberee avec [`switchboard_string_free`].
+/// Sous-ensemble d'apps en JSON (`ids_json` = tableau de chaines UUID), a liberer
+/// avec [`switchboard_string_free`].
 ///
 /// # Safety
 /// `engine` doit etre un pointeur valide. `ids_json` doit etre une chaine C valide.

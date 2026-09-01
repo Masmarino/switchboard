@@ -20,7 +20,7 @@ struct AddAppSheet: View {
             header
 
             VStack(alignment: .leading, spacing: 20) {
-                section("Général") {
+                SectionCard(title: "Général") {
                     field("Nom", icon: "textformat") {
                         TextField("Alume API", text: $name)
                             .textFieldStyle(.roundedBorder)
@@ -48,7 +48,7 @@ struct AddAppSheet: View {
                     }
                 }
 
-                section("Exécution") {
+                SectionCard(title: "Exécution") {
                     field("URL", icon: "globe") {
                         TextField("http://localhost:3000 (optionnel)", text: $url)
                             .textFieldStyle(.roundedBorder)
@@ -65,7 +65,7 @@ struct AddAppSheet: View {
                     }
                 }
 
-                section("Avancé") {
+                SectionCard(title: "Avancé") {
                     field("Variables d'env", icon: "curlybraces") {
                         TextEditor(text: $envVarsText)
                             .font(.system(size: 12, design: .monospaced))
@@ -104,46 +104,14 @@ struct AddAppSheet: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(sectionTitleColor)
-                    .frame(width: 40, height: 40)
-                Image(systemName: existing != nil ? "pencil" : "plus")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(existing != nil ? "Modifier l'app" : "Ajouter une app")
-                    .font(.system(size: 18, weight: .bold))
-                Text(existing != nil ? "Mets à jour la configuration de cette app" : "Configure une nouvelle app à superviser")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 20)
-        .padding(.bottom, 6)
+        SheetHeader(
+            icon: existing != nil ? "pencil" : "plus",
+            title: existing != nil ? "Modifier l'app" : "Ajouter une app",
+            subtitle: existing != nil ? "Mets à jour la configuration de cette app" : "Configure une nouvelle app à superviser"
+        )
     }
 
-    private let sectionTitleColor = Color.switchboardAccent
     private let labelColumnWidth: CGFloat = 165
-
-    @ViewBuilder
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased())
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(sectionTitleColor)
-                .kerning(0.6)
-            VStack(alignment: .leading, spacing: 12) {
-                content()
-            }
-            .padding(14)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        }
-    }
 
     @ViewBuilder
     private func field<Content: View>(_ label: String, icon: String, @ViewBuilder content: () -> Content) -> some View {

@@ -4,6 +4,12 @@ import OSLog
 
 private let logger = Logger(subsystem: "com.skolln.switchboard", category: "Engine")
 
+private let jsonDecoder: JSONDecoder = {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    return decoder
+}()
+
 final class DevtoolEngine {
     private let handle: OpaquePointer
 
@@ -25,10 +31,8 @@ final class DevtoolEngine {
         guard let raw else { return [] }
         defer { switchboard_string_free(raw) }
         let data = Data(String(cString: raw).utf8)
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
         do {
-            return try decoder.decode([AppEntry].self, from: data)
+            return try jsonDecoder.decode([AppEntry].self, from: data)
         } catch {
             logger.error("Failed to decode app list: \(error.localizedDescription)")
             return []
@@ -101,9 +105,7 @@ final class DevtoolEngine {
         guard let raw else { return nil }
         defer { switchboard_string_free(raw) }
         let data = Data(String(cString: raw).utf8)
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try? decoder.decode(ImportSummary.self, from: data)
+        return try? jsonDecoder.decode(ImportSummary.self, from: data)
     }
 
     func clearLogs(id: String) {

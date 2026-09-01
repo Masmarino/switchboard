@@ -33,4 +33,18 @@ struct AppEntry: Codable, Identifiable, Equatable {
         case .none: return resource
         }
     }
+
+    /// Ignores logs/logsBaseSeq/logsReplace — AppState compares fetched apps against the
+    /// current list to skip unnecessary writes, and logs are tracked separately anyway.
+    /// cpuPercent/memoryMb compare at the rounded precision resourceLine actually displays,
+    /// so per-tick measurement jitter doesn't force a reassignment/re-render on its own.
+    static func == (lhs: AppEntry, rhs: AppEntry) -> Bool {
+        lhs.id == rhs.id && lhs.name == rhs.name && lhs.workingDir == rhs.workingDir
+            && lhs.kind == rhs.kind && lhs.command == rhs.command && lhs.url == rhs.url
+            && lhs.envVars == rhs.envVars && lhs.autoRestart == rhs.autoRestart
+            && lhs.startOrder == rhs.startOrder && lhs.statusLabel == rhs.statusLabel
+            && lhs.error == rhs.error && lhs.active == rhs.active && lhs.healthy == rhs.healthy
+            && lhs.cpuPercent.rounded() == rhs.cpuPercent.rounded()
+            && lhs.memoryMb.rounded() == rhs.memoryMb.rounded()
+    }
 }

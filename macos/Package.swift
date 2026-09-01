@@ -17,12 +17,11 @@ let package = Package(
             name: "Switchboard",
             dependencies: ["CSwitchboardFFI"],
             linkerSettings: [
-                // Lien statique direct contre le .a (pas -L/-l, qui preferent le
-                // .dylib voisin) — evite toute dependance a un chemin dylib au
-                // runtime une fois l'app sortie de cet arbre de build.
+                // Lien direct sur le .a, pas -L/-l : evite toute dependance a un chemin
+                // dylib une fois l'app sortie de cet arbre de build.
                 .unsafeFlags(["\(rustTargetDir)/libswitchboard_ffi.a"]),
-                // sysinfo (dependance de switchboard-core) resout les noms
-                // d'utilisateurs macOS via OpenDirectory — pas auto-linke par SwiftPM.
+                // sysinfo (via switchboard-core) resout les noms d'utilisateurs macOS par
+                // OpenDirectory, que SwiftPM ne linke pas automatiquement.
                 .linkedFramework("OpenDirectory"),
             ]
         ),

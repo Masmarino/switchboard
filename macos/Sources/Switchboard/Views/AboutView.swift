@@ -10,7 +10,7 @@ struct AboutView: View {
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
 
-            section("Liens") {
+            SectionCard(title: "Liens", spacing: 0, padding: EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0)) {
                 aboutLink(
                     icon: "building.2",
                     title: "Développé par SkollN",
@@ -51,21 +51,6 @@ struct AboutView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-        }
-    }
-
-    @ViewBuilder
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased())
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(Color.switchboardAccent)
-                .kerning(0.6)
-            VStack(alignment: .leading, spacing: 0) {
-                content()
-            }
-            .padding(.vertical, 4)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
     }
 
